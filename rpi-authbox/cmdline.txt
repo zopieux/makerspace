@@ -1,0 +1,1 @@
+console=ttyAMA0,115200 console=tty1 loglevel=4 ipv6.disable=1 audit=0 net.ifnames=0 dwc_otg.lpm_enable=0 cgroup_enable=cpuset cgroup_enable=memory

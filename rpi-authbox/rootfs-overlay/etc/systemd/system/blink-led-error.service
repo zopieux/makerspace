@@ -1,0 +1,13 @@
+[Unit]
+Description=Blink the LEDs to indicate error
+DefaultDependencies=no
+After=sysinit.target
+
+[Service]
+Type=simple
+ExecStartPre=/bin/sh -c 'echo none >/sys/class/leds/ACT/trigger; echo none >/sys/class/leds/PWR/trigger'
+ExecStart=/bin/sh -c 'while true; do test -f /dev/shm/.healthy && sleep 2 || ( echo 0 >/sys/class/leds/ACT/brightness; echo 1 >/sys/class/leds/PWR/brightness; sleep 0.25; echo 1 >/sys/class/leds/ACT/brightness; echo 0 >/sys/class/leds/PWR/brightness; sleep 0.25; ); done'
+ExecStopPost=/bin/sh -c 'echo none >/sys/class/leds/ACT/trigger; echo 0 >/sys/class/leds/ACT/brightness; echo default-on >/sys/class/leds/PWR/trigger'
+
+[Install]
+WantedBy=basic.target

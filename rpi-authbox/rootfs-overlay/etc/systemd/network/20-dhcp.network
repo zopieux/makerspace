@@ -1,0 +1,10 @@
+[Match]
+Name=eth0
+
+[Network]
+DHCP=yes
+
+[DHCP]
+UseDNS=yes
+UseHostname=yes
+UseDomains=yes

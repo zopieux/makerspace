@@ -1,0 +1,14 @@
+[all]
+dtoverlay=disable-bt
+dtoverlay=disable-wifi
+max_framebuffers=1
+disable_overscan=1
+bootcode_delay=0
+enable_uart=1
+uart_2ndstage=0
+avoid_warnings=1
+kernel=Image
+initramfs rootfs.cpio.xz
+
+[pi3]
+arm_64bit=1

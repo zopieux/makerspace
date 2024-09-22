@@ -1,0 +1,2 @@
+name: RPI_AUTHBOX
+desc: Buildroot configuration for a minimal authbox OS for Raspberry Pi

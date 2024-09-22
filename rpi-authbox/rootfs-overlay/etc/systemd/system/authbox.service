@@ -1,0 +1,19 @@
+[Unit]
+Description=Authbox (main business logic)
+Requires=systemd-time-wait-sync.service
+After=network-online.target
+After=systemd-time-wait-sync.service
+
+[Service]
+Type=notify
+ExecStartPost=/bin/touch /dev/shm/.healthy
+ExecStart=/usr/bin/gauthbox central.shop:1883
+ExecStopPost=/bin/rm -f /dev/shm/.healthy
+Environment=GO_LOG=debug
+Restart=always
+RestartSec=5
+DynamicUser=true
+SupplementaryGroups=input
+
+[Install]
+WantedBy=multi-user.target

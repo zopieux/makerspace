@@ -1,0 +1,20 @@
+
+  Welcome to rpi-authbox OS!
+  
+      This system is entirely in-memory and managed with systemd. Attempting to
+      write any file anywhere except /tmp will fail. Happy hacking!
+
+      Useful commands:
+
+      $ ip a
+      $ systemctl status
+      $ journalctl -fel
+      $ systemctl status authbox
+      $ journalctl -felu authbox
+      $ hostnamectl
+      $ resolvectl
+      $ timedatectl
+  
+      --
+      zopi@
+
