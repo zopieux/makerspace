@@ -3,6 +3,7 @@ Description=Authbox (main business logic)
 Requires=systemd-time-wait-sync.service
 After=network-online.target
 After=systemd-time-wait-sync.service
+After=authbox.mount
 
 [Service]
 Type=notify
@@ -14,6 +15,8 @@ Restart=always
 RestartSec=5
 DynamicUser=true
 SupplementaryGroups=input
+LoadCredential=config:/sdcard/gauthbox.config.json
+Environment=LOCAL_CONFIG_FILE=%d/config
 
 [Install]
 WantedBy=multi-user.target

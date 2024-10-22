@@ -1,0 +1,14 @@
+[Unit]
+Description=Pi SD card
+DefaultDependencies=no
+Before=umount.target systemd-tmpfiles-setup.service
+Conflicts=umount.target
+
+[Mount]
+What=LABEL=AUTHBOX
+Where=/sdcard
+Type=vfat
+Options=ro,nodev,nosuid,noexec
+
+[Install]
+WantedBy=local-fs.target
