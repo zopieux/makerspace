@@ -50,6 +50,11 @@ jobs:
           cd rpi-authbox
           make BR2_EXTERNAL=$PWD O=$BUILD -C $BR source
 
+      - name: Vendor Go dependencies
+        run: |
+          cd gauthbox
+          go mod vendor
+
       - name: Build
         run: |
           cd rpi-authbox
