@@ -48,6 +48,7 @@
       };
     in
     {
+      # nix build '.#lockFile' && cp result buildroot.lock
       packages.x86_64-linux.lockFile = buildrootRpi3B.lockFile;
       packages.x86_64-linux.default = buildrootRpi3B.build;
       devShells.x86_64-linux.default = buildrootRpi3B.devShell;
