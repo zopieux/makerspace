@@ -21,7 +21,9 @@ nix build
 
 #### With Debian
 
-```bash
+Dependencies:
+
+```
 gcc
 bash
 bc
@@ -43,4 +45,18 @@ util-linux
 wget
 which
 7zip
+```
+
+### Flashing a minimal netboot SD card
+
+Assuming the SD card is `/dev/sda`. The `AUTHBOX` label is important.
+
+```shell
+$ echo ",,c" | sudo sfdisk /dev/sda && sync && sudo mkfs.vfat -F32 -n "AUTHBOX" /dev/sda1
+$ wget https://raw.githubusercontent.com/raspberrypi/firmware/refs/heads/master/boot/bootcode.bin
+$ sudo mount /dev/sda1 /mnt
+$ sudo cp bootcode.bin /mnt
+# Optionally, a local config (fallback for remote http config):
+$ sudo cp authbox.config.json /mnt
+$ sudo umount /mnt
 ```
