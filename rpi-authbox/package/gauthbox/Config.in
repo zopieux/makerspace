@@ -1,0 +1,6 @@
+config BR2_PACKAGE_GAUTHBOX
+	bool "Makerspace GAuthbox for Raspberry Pi"
+	depends on BR2_PACKAGE_HOST_GO_TARGET_ARCH_SUPPORTS
+	select BR2_PACKAGE_HOST_GO
+	help
+	  Install the Makerspace GAuthbox software
