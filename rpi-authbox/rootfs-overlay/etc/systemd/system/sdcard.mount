@@ -5,7 +5,7 @@ Before=umount.target systemd-tmpfiles-setup.service
 Conflicts=umount.target
 
 [Mount]
-What=LABEL=RPIBOOT
+What=LABEL=AUTHBOX
 Where=/sdcard
 Type=vfat
 Options=ro,nodev,nosuid,noexec
