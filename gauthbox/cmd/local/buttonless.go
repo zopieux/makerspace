@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"gauthbox"
+	"log"
 	"log/slog"
 	"os"
 	"time"
@@ -27,78 +28,66 @@ type State struct {
 func main() {
 	slog.SetDefault(slog.New(slogenv.NewHandler(slog.NewTextHandler(os.Stderr, nil))))
 
+	if len(os.Args) != 2 {
+		fmt.Fprintf(os.Stderr, "Usage: %s <control-command URL>\n", os.Args[0])
+		os.Exit(1)
+	}
+
 	name, err := os.Hostname()
 	if err != nil {
 		panic(err)
 	}
 
-	config, err := gauthbox.GetConfig()
+	config, err := gauthbox.GetConfig(os.Args[1])
 	if err != nil {
 		panic(err)
 	}
-	slog.Info("received config", slog.Any("config", config))
+	slog.Info("got config", slog.Any("config", config))
 
-	// if config.BadgeReader == nil {
-	// 	panic("buttonless needs a BadgeReader config")
-	// }
-	// if config.CurrentSensing == nil {
-	// 	panic("buttonless needs a CurrentSensing config")
-	// }
-	// if config.Relay == nil {
-	// 	panic("buttonless needs a Relay config")
-	// }
-	// if config.GreenLed == nil {
-	// 	panic("buttonless needs a green led config")
-	// }
-	// if config.RedLed == nil {
-	// 	panic("buttonless needs a red led config")
-	// }
+	mqttDisco := []gauthbox.MqttDiscovery{}
 
-	var mqttDisco []gauthbox.MqttDiscovery
-
-	badgeDev, err := gauthbox.BadgeReader(name, config.BadgeReader)
-	if badgeDev != nil {
-		panic(err)
+	badgeDev, err := gauthbox.BadgeReader(config.BadgeReader)
+	if err != nil {
+		log.Fatalf("badge init: %s", err)
 	}
 	mqttDisco = append(mqttDisco, badgeDev.Discovery)
 	go badgeDev.Looper()
 
-	currentSenseDev, err := gauthbox.CurrentSensing(name, config.CurrentSensing)
+	currentSenseDev, err := gauthbox.CurrentSensing(config.CurrentSensing)
 	if err != nil {
-		panic(err)
+		log.Fatalf("current sensing init: %s", err)
 	}
 	mqttDisco = append(mqttDisco, currentSenseDev.Discovery)
 	go currentSenseDev.Looper()
 
 	relay := make(chan bool)
-	relayDev, err := gauthbox.Relay(name, config.Relay, relay)
+	relayDev, err := gauthbox.Relay(config.Relay, relay)
 	if err != nil {
-		panic(err)
+		log.Fatalf("relay init: %s", err)
 	}
 	mqttDisco = append(mqttDisco, relayDev.Discovery)
 	go relayDev.Looper()
 
 	green := make(chan interface{})
-	greenLed, err := gauthbox.Blinker(config.GreenLed, green)
+	greenLed, err := gauthbox.Blinker(config.GreenLed, "ACT", green)
 	if err != nil {
-		panic(err)
+		log.Fatalf("green led init: %s", err)
 	}
 	go greenLed()
 
 	red := make(chan interface{})
-	redLed, err := gauthbox.Blinker(config.RedLed, red)
+	redLed, err := gauthbox.Blinker(config.RedLed, "PWR", red)
 	if err != nil {
-		panic(err)
+		log.Fatalf("red led init: %s", err)
 	}
 	go redLed()
 
-	var publish gauthbox.PublishFunc
+	var publish gauthbox.PublishFunc = func(s string, i interface{}) {}
 	var mqttEvents <-chan gauthbox.MqttEvent
 	if config.MqttBroker != nil {
-		mqttEvents, publish, err = gauthbox.MqttBroker(name, *config.MqttBroker, mqttDisco)
-		if err != nil {
-			panic(err)
-		}
+		var mqttLooper func()
+		mqttLooper, mqttEvents, publish = gauthbox.MqttBroker(name, *config.MqttBroker, mqttDisco)
+		go mqttLooper()
 	}
 
 	idleDuration := time.Duration(config.IdleSeconds) * time.Second
@@ -114,11 +103,13 @@ func main() {
 	setRelay := func(on bool) {
 		state.relay = on
 		relay <- on
-		go relayDev.OnEvent(on, publish)
+		go relayDev.OnEvent(on, name, publish)
 	}
 
 	notifyState := func() {
-		gauthbox.SdNotify("STATUS=" + state.String())
+		stateStr := state.String()
+		slog.Debug("state changed", slog.String("state", stateStr))
+		gauthbox.SdNotify("STATUS=" + stateStr)
 	}
 
 	setRelay(false)
@@ -140,16 +131,17 @@ func main() {
 				go notifyState()
 			}
 		case badgeId := <-badgeDev.Events:
-			go badgeDev.OnEvent(badgeId, publish)
+			go badgeDev.OnEvent(badgeId, name, publish)
 			if state.state == STATE_IN_USE {
-				return
+				continue
 			}
 			err := gauthbox.BadgeAuth(config.BadgeAuth, badgeId, gauthbox.BADGE_ACTION_INITIAL)
 			if err != nil {
+				wasOff := state.state == STATE_OFF
 				slog.Warn("error authenticating badge", slog.String("id", badgeId), slog.Any("error", err))
-				red <- gauthbox.LedModeBlink{Interval: time.Millisecond * 250}
-				time.Sleep(time.Millisecond * 1500)
-				red <- gauthbox.LedStatic{On: state.state == STATE_OFF}
+				red <- gauthbox.LedModeBlink{Interval: time.Millisecond * 120}
+				time.Sleep(time.Millisecond * 1200)
+				red <- gauthbox.LedStatic{On: wasOff}
 			} else {
 				state.state = STATE_IDLE
 				state.badgeId = badgeId
@@ -161,21 +153,21 @@ func main() {
 				go notifyState()
 			}
 		case currentIsHigh := <-currentSenseDev.Events:
-			go currentSenseDev.OnEvent(currentIsHigh, publish)
+			go currentSenseDev.OnEvent(currentIsHigh, name, publish)
 			switch {
 			case currentIsHigh:
-				slog.Info("current sensing is high")
+				slog.Debug("current sensing is high")
 				if state.state != STATE_IDLE {
-					return
+					continue
 				}
 				idleTimer.Stop()
 				state.state = STATE_IN_USE
 				green <- gauthbox.LedStatic{On: true}
 				go notifyState()
 			case !currentIsHigh:
-				slog.Info("current sensing is low")
+				slog.Debug("current sensing is low")
 				if state.state != STATE_IN_USE {
-					return
+					continue
 				}
 				state.state = STATE_IDLE
 				idleTimer.Reset(idleDuration)
@@ -218,13 +210,17 @@ func main() {
 }
 
 func (s State) String() string {
+	badge := "n/a"
+	if s.badgeId != "" {
+		badge = s.badgeId
+	}
 	return fmt.Sprintf("state: %s, badged: %s, relay: %s, mqtt: %s",
 		map[int]string{
-			STATE_OFF:    "off (unauthenticated)",
-			STATE_IDLE:   "idle (authenticated, not drawing current)",
-			STATE_IN_USE: "in use (authenticated, drawing current)",
+			STATE_OFF:    "OFF (unauthenticated)",
+			STATE_IDLE:   "IDLE (authenticated)",
+			STATE_IN_USE: "IN USE (authenticated, drawing current)",
 		}[s.state],
-		s.badgeId,
+		badge,
 		map[bool]string{false: "off", true: "on"}[s.relay],
 		map[bool]string{false: "disconnected", true: "connected"}[s.mqttConnected])
 }

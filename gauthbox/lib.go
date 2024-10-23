@@ -12,7 +12,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
@@ -28,8 +27,8 @@ const BADGE_TIMEOUT = 250 * time.Millisecond
 const GPIO_WANTED_PREFIX = "pinctrl-bcm2"
 const GPIO_DEBOUNCE = 100 * time.Millisecond
 
-const COMMAND_CONTROL_HOSTNAME = "control.shop"
-const COMMAND_CONTROL_URL = "http://" + COMMAND_CONTROL_HOSTNAME
+// const COMMAND_CONTROL_HOSTNAME = "control.shop"
+// const COMMAND_CONTROL_URL = "http://" + COMMAND_CONTROL_HOSTNAME + ":8000"
 
 const MQTT_TOPIC_PREFIX = "shop/"
 const HA_TOPIC_PREFIX = "homeassistant/"
@@ -39,8 +38,9 @@ const BADGE_ACTION_EXTEND = "extend"
 const BADGE_ACTION_RETURN = "return"
 
 type badgeReaderConfig struct {
-	Vendor    uint16 `json:"vendor"`
-	Product   uint16 `json:"product"`
+	Vendor    uint16 `json:"vendor,omitempty"`
+	Product   uint16 `json:"product,omitempty"`
+	Name      string `json:"name,omitempty"`
 	TimeoutMs uint32 `json:"timeout_ms"`
 }
 
@@ -82,8 +82,8 @@ type AuthboxConfig struct {
 	BadgeAuth      badgeAuthConfig      `json:"badge_auth"`
 	CurrentSensing currentSensingConfig `json:"current_sensing"`
 	Relay          relayConfig          `json:"relay"`
-	GreenLed       ledConfig            `json:"led_green"`
-	RedLed         ledConfig            `json:"led_red"`
+	GreenLed       ledConfig            `json:"green_led"`
+	RedLed         ledConfig            `json:"red_led"`
 	IdleSeconds    uint32               `json:"idle_duration_s"`
 }
 
@@ -98,6 +98,8 @@ type MqttAvailability struct {
 	ValueTemplate       string `json:"value_template,omitempty"`
 }
 
+type MqttDiscoveryAnnounceFunc func(name string, topic string) interface{}
+
 type MqttDiscovery struct {
 	// UniqueId     string             `json:"unique_id"`
 	// StateTopic   string             `json:"state_topic"`
@@ -108,39 +110,39 @@ type MqttDiscovery struct {
 	// Device       MqttDevice         `json:"device"`
 	Component string
 	Id        string
-	Payload   interface{}
+	Announce  MqttDiscoveryAnnounceFunc
 }
 type MqttDevice struct {
 	Name         string `json:"string,omitempty"`
 	SerialNumber string `json:"serial_number,omitempty"`
 }
 
-type PublishFunc = func(string, interface{})
+type PublishFunc = func(topic string, payload interface{})
 type DeviceRet[Event any] struct {
 	Looper    func()
 	Events    chan Event
-	OnEvent   func(Event, PublishFunc)
+	OnEvent   func(payload Event, name string, publish PublishFunc)
 	Discovery MqttDiscovery
 }
 
 // Retrieves the config from command & control, falling back to the SD card if
 // that fails.
-func GetConfig() (*AuthboxConfig, error) {
+func GetConfig(ccUrl string) (*AuthboxConfig, error) {
 	hostname, err := os.Hostname()
 	if err != nil {
 		return nil, err
 	}
-	if config, err := getConfigRemotely(hostname); err == nil {
+	if config, err := getConfigRemotely(hostname, ccUrl); err == nil {
 		return config, nil
 	}
 	return getConfigLocally()
 }
 
-func getConfigRemotely(hostname string) (*AuthboxConfig, error) {
+func getConfigRemotely(hostname, ccUrl string) (*AuthboxConfig, error) {
 	ctx := context.Background()
 	ctx, cancel := context.WithTimeout(ctx, time.Second*5)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, COMMAND_CONTROL_URL+"/config/"+hostname, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, ccUrl+"/config/"+hostname, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -165,7 +167,7 @@ func getConfigLocally() (*AuthboxConfig, error) {
 	return &config, nil
 }
 
-func BadgeReader(name string, c badgeReaderConfig) (*DeviceRet[string], error) {
+func BadgeReader(c badgeReaderConfig) (*DeviceRet[string], error) {
 	device, err := findBadgeReader(c)
 	if err != nil {
 		return nil, err
@@ -230,41 +232,32 @@ func BadgeReader(name string, c badgeReaderConfig) (*DeviceRet[string], error) {
 			}
 		}
 	}
-	mqttDevice := struct {
-		Topic         string     `json:"topic"`
-		ValueTemplate string     `json:"value_template,omitempty"`
-		Device        MqttDevice `json:"device"`
-	}{
-		Topic:         MQTT_TOPIC_PREFIX + name + "/badged",
-		ValueTemplate: "{{value}}",
-		Device:        MqttDevice{Name: "Badge reader on " + name},
+	announce := func(name string, topic string) interface{} {
+		return struct {
+			Topic         string     `json:"topic"`
+			ValueTemplate string     `json:"value_template,omitempty"`
+			Device        MqttDevice `json:"device"`
+		}{
+			Topic:         topic + "/" + name + "/badged",
+			ValueTemplate: "{{value}}",
+			Device:        MqttDevice{Name: "Badge reader on " + name},
+		}
 	}
 	return &DeviceRet[string]{
 		Looper: looper,
 		Events: events,
-		OnEvent: func(badgeId string, publish PublishFunc) {
-			publish(mqttDevice.Topic, badgeId)
+		OnEvent: func(badgeId string, name string, publish PublishFunc) {
+			publish(name+"/badged", badgeId)
 		},
 		Discovery: MqttDiscovery{
 			Component: "tag",
-			Payload:   mqttDevice,
+			Id:        "badge_reader",
+			Announce:  announce,
 		},
 	}, nil
 }
 
-func BadgeReaderMqtt(name string) {
-	mqttDevice := struct {
-		Topic         string     `json:"topic"`
-		ValueTemplate string     `json:"value_template,omitempty"`
-		Device        MqttDevice `json:"device"`
-	}{
-		Topic:         MQTT_TOPIC_PREFIX + name + "/badged",
-		ValueTemplate: "{{value}}",
-		Device:        MqttDevice{Name: "Badge reader on " + name},
-	}
-}
-
-func CurrentSensing(name string, c currentSensingConfig) (*DeviceRet[bool], error) {
+func CurrentSensing(c currentSensingConfig) (*DeviceRet[bool], error) {
 	chip, err := findGpioChip()
 	if err != nil {
 		return nil, err
@@ -273,7 +266,7 @@ func CurrentSensing(name string, c currentSensingConfig) (*DeviceRet[bool], erro
 	line, err := chip.RequestLine(
 		c.Pin,
 		gpiocdev.AsInput,
-		gpiocdev.WithPullUp,
+		gpiocdev.WithPullDown,
 		gpiocdev.WithBothEdges,
 		gpiocdev.DebounceOption(time.Duration(c.DebounceMs)*time.Millisecond),
 		gpiocdev.WithEventHandler(func(le gpiocdev.LineEvent) {
@@ -284,48 +277,87 @@ func CurrentSensing(name string, c currentSensingConfig) (*DeviceRet[bool], erro
 			slog.Debug("gpio: pin transition", slog.Int("pin", c.Pin), slog.Bool("high", high))
 			events <- high
 		}))
+	_ = line
+	if err != nil {
+		return nil, err
+	}
+	looper := func() {
+		for {
+			time.Sleep(time.Second * 60)
+		}
+	}
+	return &DeviceRet[bool]{
+		Looper: looper,
+		Events: events,
+		OnEvent: func(isHigh bool, name string, publish func(string, interface{})) {
+			publish(name+"/current", map[bool]string{false: "0", true: "42"}[isHigh])
+		},
+		Discovery: MqttDiscovery{
+			Component: "switch",
+			Id:        "current_sensor",
+			Announce: func(name, topic string) interface{} {
+				return struct {
+					Device      MqttDevice `json:"device"`
+					DeviceClass string     `json:"device_class"`
+					StateTopic  string     `json:"state_topic"`
+					Unit        string     `json:"unit_of_measurement"`
+				}{
+					Device:      MqttDevice{Name: "Current sensor on " + name},
+					DeviceClass: "current",
+					StateTopic:  topic + "/" + name + "/current",
+					Unit:        "A",
+				}
+			},
+		},
+	}, nil
+}
+
+func Relay(c relayConfig, isOn <-chan bool) (*DeviceRet[bool], error) {
+	chip, err := findGpioChip()
+	if err != nil {
+		return nil, err
+	}
+	line, err := chip.RequestLine(c.Pin, gpiocdev.AsOutput(0))
 	if err != nil {
 		return nil, err
 	}
 	looper := func() {
 		for {
 			select {
-			case high, ok := <-events:
-				{
-					if !ok {
-						return
-					}
-					events <- high
-				}
+			case on := <-isOn:
+				line.SetValue(map[bool]int{false: 0, true: 1}[on])
 			}
 		}
 	}
-	mqttDevice := struct {
-		Device      MqttDevice `json:"device"`
-		DeviceClass string     `json:"device_class"`
-		StateTopic  string     `json:"state_topic"`
-		Unit        string     `json:"unit_of_measurement"`
-	}{
-		Device:      MqttDevice{Name: "Current sensor on " + name},
-		DeviceClass: "current",
-		StateTopic:  MQTT_TOPIC_PREFIX + name + "/current",
-		Unit:        "A",
+	discovery := MqttDiscovery{
+		Component: "switch",
+		Id:        "relay",
+		Announce: func(name, topic string) interface{} {
+			return struct {
+				Device       MqttDevice `json:"device"`
+				CommandTopic string     `json:"command_topic"`
+				StateTopic   string     `json:"state_topic"`
+			}{
+				Device:       MqttDevice{Name: "Relay on " + name},
+				CommandTopic: topic + "/" + name + "/relay/set", // ignored, read-only
+				StateTopic:   topic + "/" + name + "/relay",
+			}
+		},
 	}
 	return &DeviceRet[bool]{
 		Looper: looper,
-		Events: events,
-		OnEvent: func(isHigh bool, publish func(string, interface{})) {
-			publish(mqttDevice.StateTopic, map[bool]string{false: "0", true: "42"}[isHigh])
+		Events: nil,
+		OnEvent: func(isOn bool, name string, publish func(string, interface{})) {
+			publish(name+"/relay", map[bool]string{false: "OFF", true: "ON"}[isOn])
 		},
-		Discovery: MqttDiscovery{
-			Component: "switch",
-			Id:        name,
-			Payload:   mqttDevice,
-		},
+		Discovery: discovery,
 	}, nil
 }
 
-func Blinker(c ledConfig, mode <-chan interface{}) (func(), error) {
+func Blinker(c ledConfig, piLedName string, mode <-chan interface{}) (func(), error) {
+	setPiLed := func(isOn bool) {
+		os.WriteFile("/sys/class/leds/"+piLedName+"/brightness", []byte(map[bool]string{false: "0", true: "1"}[isOn]), 0)
+	}
 	gpio, err := findGpioChip()
 	if err != nil {
 		return nil, err
@@ -345,158 +377,45 @@ func Blinker(c ledConfig, mode <-chan interface{}) (func(), error) {
 				case LedStatic:
 					timer.Stop()
 					line.SetValue(map[bool]int{false: 0, true: 1}[mm.On])
+					go setPiLed(mm.On)
 				case LedModeBlink:
-					line.SetValue(0)
 					isOn = false
+					line.SetValue(0)
+					go setPiLed(isOn)
 					timer.Reset(mm.Interval)
 				}
 			case <-timer.C:
 				isOn = !isOn
 				line.SetValue(map[bool]int{false: 0, true: 1}[isOn])
+				go setPiLed(isOn)
 			}
 		}
 	}, nil
 }
-
-func Relay(name string, c relayConfig, isOn <-chan bool) (*DeviceRet[bool], error) {
-	chip, err := findGpioChip()
-	if err != nil {
-		return nil, err
-	}
-	line, err := chip.RequestLine(c.Pin, gpiocdev.AsOutput(0))
-	if err != nil {
-		return nil, err
-	}
-	looper := func() {
-		for {
-			select {
-			case on := <-isOn:
-				line.SetValue(map[bool]int{false: 0, true: 1}[on])
-			}
-		}
-	}
-	mqttDevice := struct {
-		Device       MqttDevice `json:"device"`
-		CommandTopic string     `json:"command_topic"`
-		StateTopic   string     `json:"state_topic"`
-		// Availability []MqttAvailability `json:"availability,omitempty"`
-	}{
-		Device:       MqttDevice{Name: "Relay on " + name},
-		CommandTopic: MQTT_TOPIC_PREFIX + name + "/relay/set", // ignored, read-only
-		StateTopic:   MQTT_TOPIC_PREFIX + name + "/relay",
-	}
-	discovery := MqttDiscovery{}
-	return &DeviceRet[bool]{
-		Looper: looper,
-		Events: nil,
-		OnEvent: func(isOn bool, publish func(string, interface{})) {
-			publish(mqttDevice.StateTopic, map[bool]string{false: "OFF", true: "ON"}[isOn])
-		},
-		Discovery: discovery,
-	}, nil
-}
-
-type gpio struct {
-	chip *gpiocdev.Chip
-}
-
-func (b gpio) Name() string {
-	return "gpio"
-}
-
-func parsePin(topic string) int {
-	pinS := strings.Split(topic, "/")[0]
-	pin, err := strconv.Atoi(pinS)
-	if err != nil {
-		return -1
-	}
-	return pin
-}
-
-func (b gpio) setGpioLine(pin int, value int) {
-	slog.Debug("gpio: request to set pin", slog.Int("pin", pin), slog.Int("value", value))
-	l, err := b.chip.RequestLine(pin, gpiocdev.AsOutput(value))
-	if err != nil {
-		slog.Warn("gpio: could not set pin value: %s", err)
-	} else {
-		l.Close()
-	}
-}
-
-// func (b gpio) Topics() map[string]mqttHandle {
-// 	return map[string]mqttHandle{
-// 		"+/on": func(topic string, payload string, pub mqttPublish) {
-// 			pin := parsePin(topic)
-// 			if pin == -1 {
-// 				return
-// 			}
-// 			b.doLine(pin, 1)
-// 		},
-// 		"+/off": func(topic string, payload string, pub mqttPublish) {
-// 			pin := parsePin(topic)
-// 			if pin == -1 {
-// 				return
-// 			}
-// 			b.doLine(pin, 0)
-// 		},
-// 		"+/watch": func(topic string, payload string, pub mqttPublish) {
-// 			pin := parsePin(topic)
-// 			if pin == -1 {
-// 				return
-// 			}
-// 			slog.Debug("gpio: request to watch pin", slog.Int("pin", pin))
-// 			line, err := b.chip.RequestLine(pin,
-// 				gpiocdev.AsInput,
-// 				gpiocdev.WithPullUp,
-// 				gpiocdev.WithBothEdges,
-// 				gpiocdev.DebounceOption(GPIO_DEBOUNCE),
-// 				gpiocdev.WithEventHandler(func(le gpiocdev.LineEvent) {
-// 					value := "off"
-// 					if le.Type == gpiocdev.LineEventRisingEdge {
-// 						value = "on"
-// 					}
-// 					slog.Debug("gpip: pin transition", slog.Int("pin", pin), slog.String("value", value))
-// 					pub(fmt.Sprintf("%d/level", pin), value)
-// 				}))
-// 			if err != nil {
-// 				slog.Error("gpio: could not request pin", err)
-// 				return
-// 			}
-// 			b.lines = append(b.lines, line)
-// 		},
-// 	}
-// }
-
-// func (b *gpio) Init(pub mqttPublish) error {
-// 	var err error
-// 	b.chip, err = findGpioChip()
-// 	if err != nil {
-// 		return err
-// 	}
-// 	b.lines = make([]*gpiocdev.Line, 0)
-// 	return nil
-// }
 
 type MqttEvent struct {
 	DisconnectedError error
 }
 
-func MqttBroker(name string, c mqttConfig, discoveries []MqttDiscovery) (<-chan MqttEvent, PublishFunc, error) {
+func MqttBroker(name string, c mqttConfig, discoveries []MqttDiscovery) (func(), <-chan MqttEvent, PublishFunc) {
 	opts := mqtt.NewClientOptions()
 	opts.AddBroker(c.Broker)
 	opts.SetClientID("authbox/" + name)
-	opts.SetConnectRetryInterval(2 * time.Second)
+	opts.SetAutoReconnect(true)
+	opts.SetConnectTimeout(time.Second * 2)
+	opts.SetConnectRetryInterval(time.Second * 2)
 
 	events := make(chan MqttEvent)
 
 	sendDiscoveries := func(mc mqtt.Client) {
 		for _, d := range discoveries {
-			bytes, err := json.Marshal(d.Payload)
+			bytes, err := json.Marshal(d.Announce(name, c.Topic))
 			if err != nil {
+				slog.Error("could not marshall JSON for Home Assistant discovery", slog.Any("error", err))
 				continue
 			}
 			if t := mc.Publish("homeassistant/"+d.Component+"/"+d.Id+"/config", 0, true, string(bytes)); t.Wait() && t.Error() != nil {
-				slog.Warn("error publishing Home Assistant discovery", slog.Any("error", t.Error()))
+				slog.Error("error publishing Home Assistant discovery", slog.Any("error", t.Error()))
 			}
 		}
 	}
@@ -504,59 +423,31 @@ func MqttBroker(name string, c mqttConfig, discoveries []MqttDiscovery) (<-chan 
 	opts.SetConnectionLostHandler(func(c mqtt.Client, err error) {
 		events <- MqttEvent{DisconnectedError: err}
 	})
-
 	opts.SetOnConnectHandler(func(mc mqtt.Client) {
 		events <- MqttEvent{DisconnectedError: nil}
 		sendDiscoveries(mc)
-		// doPublish := func(actor mqttActor) mqttPublish {
-		// 	prefix := topicPrefix(actor)
-		// 	return func(topic string, payload interface{}) {
-		// 		if t := c.Publish(prefix+topic, 0, false, payload); t.Wait() && t.Error() != nil {
-		// 			slog.Error("mqtt: error publishing", t.Error(), slog.String("topic", topic))
-		// 		}
-		// 	}
-		// }
-
-		// actors := []mqttActor{}
-		// for _, actor := range []mqttActor{&badge{}, &gpio{}} {
-		// 	if err := actor.Init(doPublish(actor)); err != nil {
-		// 		slog.Error("actor: error loading", err, slog.String("actor", actor.Name()))
-		// 	} else {
-		// 		slog.Info("actor: loaded successfully", slog.String("actor", actor.Name()))
-		// 		actors = append(actors, actor)
-		// 	}
-		// }
-
-		// for _, actor := range actors {
-		// 	prefix := topicPrefix(actor)
-		// 	for topic, handle := range actor.Topics() {
-		// 		if t := c.Subscribe(prefix+topic, 0, func(_ mqtt.Client, m mqtt.Message) {
-		// 			handle(strings.TrimPrefix(m.Topic(), prefix), string(m.Payload()), doPublish(actor))
-		// 		}); t.Wait() && t.Error() != nil {
-		// 			log.Fatalf("mqtt: fatal error subscribing: %v", t.Error())
-		// 		}
-		// 	}
-		// }
-		// sdNotify("READY=1")
-		// sdNotify(fmt.Sprintf("STATUS=mqtt: connected as '%s' to %s", hostname, mqttBroker))
-		// slog.Info("mqtt: connected", slog.String("broker", mqttBroker))
 	})
 
 	mc := mqtt.NewClient(opts)
 
-	if t := mc.Connect(); t.Wait() && t.Error() != nil {
-		events <- MqttEvent{DisconnectedError: t.Error()}
-		// log.Fatalf("mqtt: fatal error connecting: %v", t.Error())
-		// sendDiscoveries()
+	looper := func() {
+		for {
+			if t := mc.Connect(); t.Wait() && t.Error() != nil {
+				events <- MqttEvent{DisconnectedError: t.Error()}
+				time.Sleep(time.Second * 5)
+			} else {
+				return
+			}
+		}
 	}
 
 	publish := func(topic string, payload interface{}) {
 		if t := mc.Publish(c.Topic+"/"+topic, 0, false, payload); t.Wait() && t.Error() != nil {
-			// slog.Error("mqtt: error publishing", t.Error(), slog.String("topic", topic))
+			slog.Error("could not publish to mqtt", slog.Any("error", t.Error()))
 		}
 	}
 
-	return events, publish, nil
+	return looper, events, publish
 }
 
 // Sends a HTTP request to check for badge access.
@@ -597,17 +488,18 @@ func findBadgeReader(c badgeReaderConfig) (*evdev.InputDevice, error) {
 	for _, d := range paths {
 		device, err := evdev.Open(d.Path)
 		if err != nil {
+			println("onoes open")
 			return nil, err
 		}
 		inpId, err := device.InputID()
 		if err != nil {
 			return nil, err
 		}
-		if inpId.Vendor == c.Vendor && inpId.Product == c.Product {
+		if d.Name == c.Name || (inpId.Vendor == c.Vendor && inpId.Product == c.Product) {
 			return device, nil
 		}
 	}
-	return nil, errors.New(fmt.Sprintf("no badge reader found amongst %d devices with ID %d:%d", len(paths), c.Vendor, c.Product))
+	return nil, errors.New(fmt.Sprintf("no badge reader found amongst %d devices with ID %04x:%04x", len(paths), c.Vendor, c.Product))
 }
 
 // Finds the GPIO chip by label prefix.
