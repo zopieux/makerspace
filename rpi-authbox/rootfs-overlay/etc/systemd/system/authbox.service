@@ -1,21 +1,21 @@
 [Unit]
-Description=Authbox (main business logic)
+Description=Authbox
 Requires=systemd-time-wait-sync.service
 After=network-online.target
 After=systemd-time-wait-sync.service
-After=authbox.mount
+After=sdcard.mount
 
 [Service]
 Type=notify
 ExecStartPost=/bin/touch /dev/shm/.healthy
-ExecStart=/usr/bin/gauthbox central.shop:1883
+ExecStart=/usr/bin/gauthbox
 ExecStopPost=/bin/rm -f /dev/shm/.healthy
 Environment=GO_LOG=debug
 Restart=always
 RestartSec=5
 DynamicUser=true
 SupplementaryGroups=input
-LoadCredential=config:/sdcard/gauthbox.config.json
+LoadCredential=config:/sdcard/authbox.config.json
 Environment=LOCAL_CONFIG_FILE=%d/config
 
 [Install]
