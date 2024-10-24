@@ -8,7 +8,7 @@ After=sdcard.mount
 [Service]
 Type=notify
 ExecStartPost=/bin/touch /dev/shm/.healthy
-ExecStart=/usr/bin/gauthbox http://control.shop
+ExecStart=/usr/bin/gauthbox http://control.woodshop-zrh
 ExecStopPost=/bin/rm -f /dev/shm/.healthy
 Environment=GO_LOG=debug
 Restart=always
