@@ -1,0 +1,2 @@
+source "$BR2_EXTERNAL_RPI_AUTHBOX_PATH/package/gauthbox/Config.in"
+
