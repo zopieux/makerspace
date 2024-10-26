@@ -29,6 +29,10 @@ jobs:
       - name: Check out repository code
         uses: actions/checkout@v4
 
+      - name: Get short revision SHA
+        id: short-sha
+        run: echo "sha=${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
+
       - name: Vendor Go dependencies
         run: |
           cd gauthbox
@@ -125,3 +129,12 @@ jobs:
         with:
           name: rpi-authbox.7z
           path: ${{ env.BUILD }}/rpi-authbox.7z
+
+      - name: Create release
+        continue-on-error: true
+        uses: softprops/action-gh-release@cd8b57e57218a24af14e307ad8491ec133804ef1
+        with:
+          draft: true
+          name: rpi-authbox-${{ steps.short-sha.outputs.sha }}
+          files: ${{ env.BUILD }}/rpi-authbox.7z
+          fail_on_unmatched_files: true
