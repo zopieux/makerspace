@@ -15,4 +15,4 @@ rpi-authbox: all
 		$(O)/rpi-authbox
 
 rpi-authbox.7z: rpi-authbox
-	7z a $(O)/rpi-authbox.7z $(O)/rpi-authbox/*
+	cd $(O)/rpi-authbox && 7z a $(O)/rpi-authbox.7z .
