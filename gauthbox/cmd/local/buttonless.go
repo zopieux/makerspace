@@ -82,7 +82,7 @@ func main() {
 	}
 	go redLed()
 
-	var publish gauthbox.PublishFunc = func(s string, i interface{}) {}
+	var publish gauthbox.PublishFunc = func(string, interface{}) {}
 	var mqttEvents <-chan gauthbox.MqttEvent
 	if config.MqttBroker != nil {
 		var mqttLooper func()
@@ -122,73 +122,86 @@ func main() {
 	for {
 		select {
 		case e := <-mqttEvents:
-			{
-				if e.DisconnectedError == nil {
-					state.mqttConnected = true
-				} else {
-					state.mqttConnected = false
-				}
-				go notifyState()
+			// Nothing special, just report the state.
+			// Not being able to communicate with MQTT is non-fatal.
+			if e.DisconnectedError == nil {
+				state.mqttConnected = true
+			} else {
+				state.mqttConnected = false
 			}
+			go notifyState()
 		case badgeId := <-badgeDev.Events:
+			// Someone badged.
 			go badgeDev.OnEvent(badgeId, name, publish)
 			if state.state == STATE_IN_USE {
+				// If the tool is already in active use, nothing to do.
 				continue
 			}
+			// Otherwise, the tool is either OFF or in grace period (IDLE).
+			// Authenticate and switch the relay.
 			err := gauthbox.BadgeAuth(config.BadgeAuth, badgeId, gauthbox.BADGE_ACTION_INITIAL)
 			if err != nil {
+				// Blink the red LED a few times to provide “access denied” feedback.
 				wasOff := state.state == STATE_OFF
 				slog.Warn("error authenticating badge", slog.String("id", badgeId), slog.Any("error", err))
-				red <- gauthbox.LedModeBlink{Interval: time.Millisecond * 120}
+				red <- gauthbox.LedBlink{Interval: time.Millisecond * 120}
 				time.Sleep(time.Millisecond * 1200)
 				red <- gauthbox.LedStatic{On: wasOff}
 			} else {
+				// All good, power the machine and start IDLEing.
 				state.state = STATE_IDLE
 				state.badgeId = badgeId
 				idleTimer.Reset(idleDuration)
 				badgeExpired.Reset(badgeExtendDuration)
-				green <- gauthbox.LedModeBlink{Interval: time.Millisecond * 500}
+				green <- gauthbox.LedBlink{Interval: time.Millisecond * 500}
 				red <- gauthbox.LedStatic{On: false}
 				setRelay(true)
 				go notifyState()
 			}
 		case currentIsHigh := <-currentSenseDev.Events:
+			// Current sensing went up or down.
 			go currentSenseDev.OnEvent(currentIsHigh, name, publish)
 			switch {
 			case currentIsHigh:
-				slog.Debug("current sensing is high")
 				if state.state != STATE_IDLE {
+					// Not supposed to happen, but anyway, bail.
 					continue
 				}
+				// The machine is now in use, inhibit the idle timer.
 				idleTimer.Stop()
 				state.state = STATE_IN_USE
 				green <- gauthbox.LedStatic{On: true}
 				go notifyState()
 			case !currentIsHigh:
-				slog.Debug("current sensing is low")
 				if state.state != STATE_IN_USE {
+					// Not supposed to happen, but anyway, bail.
 					continue
 				}
+				// The machine stopped drawing current. Start the idle timer in preparation of shutting off.
 				state.state = STATE_IDLE
 				idleTimer.Reset(idleDuration)
-				green <- gauthbox.LedModeBlink{Interval: time.Millisecond * 500}
+				green <- gauthbox.LedBlink{Interval: time.Millisecond * 500}
 				go notifyState()
 			}
 		case <-badgeExpired.C:
-			switch state.state {
-			case STATE_IDLE:
-			case STATE_IN_USE:
-				go func(badgeId string) {
-					err := gauthbox.BadgeAuth(config.BadgeAuth, badgeId, gauthbox.BADGE_ACTION_EXTEND)
-					if err != nil {
-						// That extend call is only for informational purposes.
-						// Do not cut off power if that fails. Stopping a machine while in use can be dangerous or expensive.
-						slog.Warn("error authenticating badge for extend", slog.String("id", badgeId), slog.Any("error", err))
-					}
-				}(state.badgeId)
-				badgeExpired.Reset(badgeExtendDuration)
+			// The badge authentication duration (e.g. 10 minutes) has expired.
+			if state.state == STATE_OFF {
+				continue
 			}
+			badgeExpired.Reset(badgeExtendDuration)
+			// Authenticate again in the background if the machine is not OFF.
+			// This is only to accurately keep track of the real utilization duration.
+			go func(badgeId string) {
+				err := gauthbox.BadgeAuth(config.BadgeAuth, badgeId, gauthbox.BADGE_ACTION_EXTEND)
+				if err != nil {
+					// That extend call is only for informational purposes.
+					// Do not cut off power if that fails. Stopping a machine while in use can be dangerous or expensive.
+					slog.Warn("error authenticating badge for extend", slog.String("id", badgeId), slog.Any("error", err))
+				}
+			}(state.badgeId)
 		case <-idleTimer.C:
+			// The machine is not drawing current and we've reach the idle timeout.
+			// Turn the power relay off, de-authenticate and return unused minutes.
 			switch state.state {
 			case STATE_IDLE:
 				state.state = STATE_OFF

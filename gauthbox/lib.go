@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"html/template"
 	"io"
 	"log/slog"
 	"net"
@@ -13,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"text/template"
 	"time"
 
 	mqtt "github.com/eclipse/paho.mqtt.golang"
@@ -27,10 +27,6 @@ const BADGE_TIMEOUT = 250 * time.Millisecond
 const GPIO_WANTED_PREFIX = "pinctrl-bcm2"
 const GPIO_DEBOUNCE = 100 * time.Millisecond
 
-// const COMMAND_CONTROL_HOSTNAME = "control.shop"
-// const COMMAND_CONTROL_URL = "http://" + COMMAND_CONTROL_HOSTNAME + ":8000"
-
-const MQTT_TOPIC_PREFIX = "shop/"
 const HA_TOPIC_PREFIX = "homeassistant/"
 
 const BADGE_ACTION_INITIAL = "initial"
@@ -45,7 +41,7 @@ type badgeReaderConfig struct {
 }
 
 type badgeAuthConfig struct {
-	// .badge, .state, .duration
+	// .badgeId, .state, .duration
 	UrlTemplate  string `json:"url_template"`
 	UsageMinutes uint32 `json:"usage_duration_minutes"`
 }
@@ -56,8 +52,9 @@ type relayConfig struct {
 }
 
 type currentSensingConfig struct {
-	Pin        int `json:"pin"`
-	DebounceMs int `json:"debounce_ms"`
+	Pin        int    `json:"pin"`
+	DebounceMs int    `json:"debounce_ms"`
+	Bias       string `json:"bias"`
 }
 
 type mqttConfig struct {
@@ -72,7 +69,7 @@ type ledConfig struct {
 type LedStatic struct {
 	On bool
 }
-type LedModeBlink struct {
+type LedBlink struct {
 	Interval time.Duration
 }
 
@@ -97,17 +94,8 @@ type MqttAvailability struct {
 	Topic               string `json:"topic"`
 	ValueTemplate       string `json:"value_template,omitempty"`
 }
-
 type MqttDiscoveryAnnounceFunc func(name string, topic string) interface{}
-
 type MqttDiscovery struct {
-	// UniqueId     string             `json:"unique_id"`
-	// StateTopic   string             `json:"state_topic"`
-	// CommandTopic string             `json:"command_topic,omitempty"`
-	// Availability []MqttAvailability `json:"availability,omitempty"`
-	// PayloadOn    string             `json:"payload_on,omitempty"`
-	// PayloadOff   string             `json:"payload_off,omitempty"`
-	// Device       MqttDevice         `json:"device"`
 	Component string
 	Id        string
 	Announce  MqttDiscoveryAnnounceFunc
@@ -116,8 +104,8 @@ type MqttDevice struct {
 	Name         string `json:"string,omitempty"`
 	SerialNumber string `json:"serial_number,omitempty"`
 }
-
 type PublishFunc = func(topic string, payload interface{})
+
 type DeviceRet[Event any] struct {
 	Looper    func()
 	Events    chan Event
@@ -138,6 +126,7 @@ func GetConfig(ccUrl string) (*AuthboxConfig, error) {
 	return getConfigLocally()
 }
 
+// Retrieves and parses the config from ccUrl.
 func getConfigRemotely(hostname, ccUrl string) (*AuthboxConfig, error) {
 	ctx := context.Background()
 	ctx, cancel := context.WithTimeout(ctx, time.Second*5)
@@ -156,6 +145,7 @@ func getConfigRemotely(hostname, ccUrl string) (*AuthboxConfig, error) {
 	return &config, nil
 }
 
+// Retrieves the config from the local file at path $LOCAL_CONFIG_FILE.
 func getConfigLocally() (*AuthboxConfig, error) {
 	f, err := os.Open(os.Getenv("LOCAL_CONFIG_FILE"))
 	if err != nil {
@@ -167,6 +157,8 @@ func getConfigLocally() (*AuthboxConfig, error) {
 	return &config, nil
 }
 
+// Badge reader logic. The event stream yields ASCII badge IDs.
+// MQTT: registers as a tag scanner.
 func BadgeReader(c badgeReaderConfig) (*DeviceRet[string], error) {
 	device, err := findBadgeReader(c)
 	if err != nil {
@@ -257,16 +249,22 @@ func BadgeReader(c badgeReaderConfig) (*DeviceRet[string], error) {
 	}, nil
 }
 
+// Current sensing logic (digital). The event stream yield high/low transitions.
+// MQTT: registers as a switch with a 'current' device class. 0 Amps means no current, 42 Amps means some current.
 func CurrentSensing(c currentSensingConfig) (*DeviceRet[bool], error) {
 	chip, err := findGpioChip()
 	if err != nil {
 		return nil, err
 	}
 	events := make(chan bool)
+	bias := gpiocdev.LineBiasPullDown
+	if c.Bias == "pull_up" {
+		bias = gpiocdev.LineBiasPullUp
+	}
 	line, err := chip.RequestLine(
 		c.Pin,
 		gpiocdev.AsInput,
-		gpiocdev.WithPullDown,
+		bias,
 		gpiocdev.WithBothEdges,
 		gpiocdev.DebounceOption(time.Duration(c.DebounceMs)*time.Millisecond),
 		gpiocdev.WithEventHandler(func(le gpiocdev.LineEvent) {
@@ -312,6 +310,8 @@ func CurrentSensing(c currentSensingConfig) (*DeviceRet[bool], error) {
 	}, nil
 }
 
+// Relay logic. Switches a GPIO pin according to 'isOn' booleans.
+// MQTT: registers as a switch.
 func Relay(c relayConfig, isOn <-chan bool) (*DeviceRet[bool], error) {
 	chip, err := findGpioChip()
 	if err != nil {
@@ -354,9 +354,17 @@ func Relay(c relayConfig, isOn <-chan bool) (*DeviceRet[bool], error) {
 	}, nil
 }
 
-func Blinker(c ledConfig, piLedName string, mode <-chan interface{}) (func(), error) {
+// Blinker utility to set a GPIO LED in either static or blink mode.
+// To change the state, send either LedStatic{On: bool} or LedBlink{Interval: Duration} to chan 'mode'.
+// If sysLedName is non-empty, this also controls the on-board LED at /sys/class/leds/<sysLedName>.
+func Blinker(c ledConfig, sysLedName string, mode <-chan interface{}) (func(), error) {
+	if sysLedName != "" {
+		os.WriteFile("/sys/class/leds/"+sysLedName+"/trigger", []byte("none"), 0)
+	}
 	setPiLed := func(isOn bool) {
-		os.WriteFile("/sys/class/leds/"+piLedName+"/brightness", []byte(map[bool]string{false: "0", true: "1"}[isOn]), 0)
+		if sysLedName != "" {
+			os.WriteFile("/sys/class/leds/"+sysLedName+"/brightness", []byte(map[bool]string{false: "0", true: "1"}[isOn]), 0)
+		}
 	}
 	gpio, err := findGpioChip()
 	if err != nil {
@@ -378,7 +386,7 @@ func Blinker(c ledConfig, piLedName string, mode <-chan interface{}) (func(), er
 					timer.Stop()
 					line.SetValue(map[bool]int{false: 0, true: 1}[mm.On])
 					go setPiLed(mm.On)
-				case LedModeBlink:
+				case LedBlink:
 					isOn = false
 					line.SetValue(0)
 					go setPiLed(isOn)
@@ -397,6 +405,8 @@ type MqttEvent struct {
 	DisconnectedError error
 }
 
+// Publish to MQTT logic. At connect time, publishes Home Assistant discovery messages.
+// Use the returned PublishFunc to publish messages using the configured topic prefix.
 func MqttBroker(name string, c mqttConfig, discoveries []MqttDiscovery) (func(), <-chan MqttEvent, PublishFunc) {
 	opts := mqtt.NewClientOptions()
 	opts.AddBroker(c.Broker)
@@ -451,15 +461,15 @@ func MqttBroker(name string, c mqttConfig, discoveries []MqttDiscovery) (func(),
 }
 
 // Sends a HTTP request to check for badge access.
-func BadgeAuth(c badgeAuthConfig, badgeId string, action string) error {
+func BadgeAuth(c badgeAuthConfig, badgeId string, state string) error {
 	t, err := template.New("url").Parse(c.UrlTemplate)
 	if err != nil {
 		return err
 	}
 	var url strings.Builder
 	err = t.Execute(&url, map[string]interface{}{
-		"badge":    badgeId,
-		"state":    action,
+		"badgeId":  badgeId,
+		"state":    state,
 		"duration": c.UsageMinutes,
 	})
 	if err != nil {
@@ -479,7 +489,7 @@ func BadgeAuth(c badgeAuthConfig, badgeId string, action string) error {
 	return nil
 }
 
-// Finds the badge reader input device by vendor & product IDs.
+// Finds the badge reader input device by either name or numeric vendor & product IDs.
 func findBadgeReader(c badgeReaderConfig) (*evdev.InputDevice, error) {
 	paths, err := evdev.ListDevicePaths()
 	if err != nil {
@@ -520,7 +530,7 @@ func findGpioChip() (*gpiocdev.Chip, error) {
 	return nil, errors.New(fmt.Sprintf("no GPIO chip found amongst %d devices with prefix '%s'", len(paths), GPIO_WANTED_PREFIX))
 }
 
-// sdNotify sends a message to systemd notify socket.
+// Sends a message to systemd notify socket.
 func SdNotify(state string) (bool, error) {
 	socketAddr := &net.UnixAddr{
 		Name: os.Getenv("NOTIFY_SOCKET"),
