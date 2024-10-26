@@ -79,7 +79,7 @@ jobs:
           ( cd $BUILD && $BR/support/scripts/graph-depends --flat-list --quiet --transitive -s toolchain ) \
             | tr ' ' '\n' | grep -E '^(toolchain|host)' | sort | xargs >/tmp/host.pkgs
           cat /tmp/host.pkgs
-          ( cd rpi-authbox && make BR2_EXTERNAL=$PWD O=$BUILD -C $BR $(cat /tmp/host.pkgs) 2>$LOGS/host.stderr >$LOGS/host.stdout )
+          cd rpi-authbox && make BR2_EXTERNAL=$PWD O=$BUILD -C $BR $(cat /tmp/host.pkgs) 2>$LOGS/host.stderr >$LOGS/host.stdout
 
       - name: Tail logs
         if: failure()
