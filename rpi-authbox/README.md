@@ -11,15 +11,18 @@ A Buildroot-based lightweight OS image that implements the makerspace authbox so
 * Minimal amounts of customizations compared to mainline Buildroot.
 * Run on RPI 3B+.
 
-## Features
+## Features
 
 * Main purpose is to run the gauthbox package (authbox automation in Go).
+* The system is distributed as a folder meant to be server over TFTP. No NFS.
 * The SD card is mounted read-only for local config fallback.
 * Built around a few systemd units.
 * Read-only, in-memory rootfs.
 * Configured by DHCP, including hostname.
 * NTP synchronization at boot. Main services wait for the system time to be updated.
 * System log (journald) is uploaded to a centralized destination over the network.
+* As of 2024, the kernel image is 19MB and the compressed rootfs is 20MB. Mandatory Pi boot files notwithstanding, **the entire system is just under 40MB**.
+* A GitHub Workflow builds the system reproducibly, from source. Check the [releases](https://github.com/zopieux/makerspace/releases/).
 
 ## Building
 
