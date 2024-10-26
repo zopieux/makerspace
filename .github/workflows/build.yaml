@@ -10,7 +10,7 @@ jobs:
     env:
       BR:         /home/runner/work/buildroot
       BUILD:      /home/runner/work/build
-      BR2_DL_DIR: /home/runner/work/build/dl
+      BR2_DL_DIR: /home/runner/work/dl
 
     steps:
       - name: Install base Debian packages
@@ -26,6 +26,11 @@ jobs:
 
       - name: Check out repository code
         uses: actions/checkout@v4
+
+      - name: Vendor Go dependencies
+        run: |
+          cd gauthbox
+          go mod vendor
 
       - name: Clone Buildroot
         run: git clone --depth=1 --branch=2024.08 https://gitlab.com/buildroot.org/buildroot.git $BR
@@ -48,17 +53,63 @@ jobs:
       - name: Download missing Buildroot sources
         run: |
           cd rpi-authbox
-          make BR2_EXTERNAL=$PWD O=$BUILD -C $BR source
+          make BR2_EXTERNAL=$PWD O=$BUILD -C $BR source 2>&1 >/dev/null
 
-      - name: Vendor Go dependencies
-        run: |
-          cd gauthbox
-          go mod vendor
+      - name: Save Buildroot sources
+        id: save-br-sources
+        uses: actions/cache/save@v4  # Note the /save
+        with:
+          path: ${{ env.BR2_DL_DIR }}
+          key: ${{ runner.os }}-br-sources-${{ github.sha }}
 
-      - name: Build
+      - name: Restore cached host/toolchain
+        id: restore-br-host
+        uses: actions/cache/restore@v4  # Note the /restore
+        with:
+          path: ${{ env.BUILD }}
+          key: ${{ runner.os }}-br-host-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-br-host-
+
+      - name: Build missing Buildroot host/toolchain
         run: |
           cd rpi-authbox
-          make BR2_EXTERNAL=$PWD O=$BUILD -C $BR rpi-authbox.7z
+          make BR2_EXTERNAL=$PWD O=$BUILD -C $BR \
+            $(cd $BUILD && $BR/support/scripts/graph-depends --flat-list --quiet --transitive -s toolchain | tr ' ' '\n' | grep -E '^(toolchain|host)' | xargs) \
+            2>/tmp/host.stderr >/tmp/host.stdout
+
+      - name: Tail logs
+        if: failure()
+        continue-on-error: true
+        run: |
+          echo stdout:
+          tail -n 300 /tmp/host.stdout
+          echo
+          echo stderr:
+          tail -n 300 /tmp/host.stderr
+
+      - name: Save cached host/toolchain
+        id: save-br-host
+        uses: actions/cache/save@v4  # Note the /save
+        with:
+          path: ${{ env.BUILD }}
+          key: ${{ runner.os }}-br-host-${{ github.sha }}
+
+      - name: Build everything
+        run: |
+          cd rpi-authbox
+          make BR2_EXTERNAL=$PWD O=$BUILD -C $BR rpi-authbox.7z \
+            2>/tmp/build.stderr >/tmp/build.stdout
+
+      - name: Tail logs
+        if: failure()
+        continue-on-error: true
+        run: |
+          echo stdout:
+          tail -n 300 /tmp/build.stdout
+          echo
+          echo stderr:
+          tail -n 300 /tmp/build.stderr
 
       - name: Upload rpi-authbox.7z
         uses: actions/upload-artifact@v4
