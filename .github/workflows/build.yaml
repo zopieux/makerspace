@@ -111,6 +111,12 @@ jobs:
           echo stderr:
           tail -n 300 /tmp/build.stderr
 
+      - name: Upload rpi-authbox
+        uses: actions/upload-artifact@v4
+        with:
+          name: rpi-authbox
+          path: ${{ env.BUILD }}/rpi-authbox
+
       - name: Upload rpi-authbox.7z
         uses: actions/upload-artifact@v4
         with:
