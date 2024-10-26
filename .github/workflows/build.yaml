@@ -8,9 +8,11 @@ jobs:
       contains(github.event.head_commit.message, 'ci: build') || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     env:
-      BR:         /home/runner/work/buildroot
-      BUILD:      /home/runner/work/build
-      BR2_DL_DIR: /home/runner/work/dl
+      BR:            /home/runner/work/buildroot
+      BUILD:         /home/runner/work/build
+      BR2_DL_DIR:    /home/runner/work/dl
+      LOGS:          /tmp
+      CACHEFILE_SOURCES: ${{ github.workspace }}/.cachefile_sources
 
     steps:
       - name: Install base Debian packages
@@ -42,74 +44,75 @@ jobs:
           make BR2_EXTERNAL=$PWD O=$BUILD -C $BR rpi3b_defconfig
 
       - name: Restore cached Buildroot sources
-        id: cache-br-sources
-        uses: actions/cache@v4
+        id: restore-br-sources
+        uses: actions/cache/restore@v4  # Note the /restore
         with:
           path: ${{ env.BR2_DL_DIR }}
-          key: ${{ runner.os }}-br-sources-${{ github.sha }}
+          key: ${{ runner.os }}-br-sources-dummy
           restore-keys: |
             ${{ runner.os }}-br-sources-
 
       - name: Download missing Buildroot sources
         run: |
-          cd rpi-authbox
-          make BR2_EXTERNAL=$PWD O=$BUILD -C $BR source 2>&1 >/dev/null
+          ( cd rpi-authbox && make BR2_EXTERNAL=$PWD O=$BUILD -C $BR source 2>&1 >/dev/null )
+          ( cd $BR2_DL_DIR && find -type f -not -name .lock | sort >$CACHEFILE_SOURCES )
+          cat $CACHEFILE_SOURCES
 
       - name: Save Buildroot sources
         id: save-br-sources
         uses: actions/cache/save@v4  # Note the /save
         with:
           path: ${{ env.BR2_DL_DIR }}
-          key: ${{ runner.os }}-br-sources-${{ github.sha }}
+          key: ${{ runner.os }}-br-sources-${{ hashFiles(env.CACHEFILE_SOURCES) }}
 
       - name: Restore cached host/toolchain
         id: restore-br-host
         uses: actions/cache/restore@v4  # Note the /restore
         with:
           path: ${{ env.BUILD }}
-          key: ${{ runner.os }}-br-host-${{ github.sha }}
+          key: ${{ runner.os }}-br-host-dummy
           restore-keys: |
             ${{ runner.os }}-br-host-
 
       - name: Build missing Buildroot host/toolchain
         run: |
-          cd rpi-authbox
-          make BR2_EXTERNAL=$PWD O=$BUILD -C $BR \
-            $(cd $BUILD && $BR/support/scripts/graph-depends --flat-list --quiet --transitive -s toolchain | tr ' ' '\n' | grep -E '^(toolchain|host)' | xargs) \
-            2>/tmp/host.stderr >/tmp/host.stdout
+          ( cd $BUILD && $BR/support/scripts/graph-depends --flat-list --quiet --transitive -s toolchain ) \
+            | tr ' ' '\n' | grep -E '^(toolchain|host)' | sort | xargs >/tmp/host.pkgs
+          cat /tmp/host.pkgs
+          ( cd rpi-authbox && make BR2_EXTERNAL=$PWD O=$BUILD -C $BR $(cat /tmp/host.pkgs) 2>$LOGS/host.stderr >$LOGS/host.stdout )
 
       - name: Tail logs
         if: failure()
         continue-on-error: true
         run: |
           echo stdout:
-          tail -n 300 /tmp/host.stdout
+          tail -n 300 $LOGS/host.stdout
           echo
           echo stderr:
-          tail -n 300 /tmp/host.stderr
+          tail -n 300 $LOGS/host.stderr
 
       - name: Save cached host/toolchain
         id: save-br-host
         uses: actions/cache/save@v4  # Note the /save
         with:
           path: ${{ env.BUILD }}
-          key: ${{ runner.os }}-br-host-${{ github.sha }}
+          key: ${{ runner.os }}-br-host-${{ hashFiles(env.CACHEFILE_SOURCES) }}
 
       - name: Build everything
         run: |
           cd rpi-authbox
           make BR2_EXTERNAL=$PWD O=$BUILD -C $BR rpi-authbox.7z \
-            2>/tmp/build.stderr >/tmp/build.stdout
+            2>$LOGS/build.stderr >$LOGS/build.stdout
 
       - name: Tail logs
         if: failure()
         continue-on-error: true
         run: |
           echo stdout:
-          tail -n 300 /tmp/build.stdout
+          tail -n 300 $LOGS/build.stdout
           echo
           echo stderr:
-          tail -n 300 /tmp/build.stderr
+          tail -n 300 $LOGS/build.stderr
 
       - name: Upload rpi-authbox
         uses: actions/upload-artifact@v4
