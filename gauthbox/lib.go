@@ -47,12 +47,14 @@ type badgeAuthConfig struct {
 }
 
 type relayConfig struct {
-	Pin      int `json:"pin"`
-	Debounce int `json:"debounce_ms"`
+	Pin       int  `json:"pin"`
+	ActiveLow bool `json:"active_low"`
+	Debounce  int  `json:"debounce_ms"`
 }
 
 type currentSensingConfig struct {
 	Pin        int    `json:"pin"`
+	ActiveLow  bool   `json:"active_low"`
 	DebounceMs int    `json:"debounce_ms"`
 	Bias       string `json:"bias"`
 }
@@ -63,7 +65,8 @@ type mqttConfig struct {
 }
 
 type ledConfig struct {
-	Pin int `json:"pin"`
+	Pin       int  `json:"pin"`
+	ActiveLow bool `json:"active_low"`
 }
 
 type LedStatic struct {
@@ -272,6 +275,9 @@ func CurrentSensing(c currentSensingConfig) (*DeviceRet[bool], error) {
 			if le.Type == gpiocdev.LineEventRisingEdge {
 				high = true
 			}
+			if c.ActiveLow {
+				high = !high
+			}
 			slog.Debug("gpio: pin transition", slog.Int("pin", c.Pin), slog.Bool("high", high))
 			events <- high
 		}))
@@ -310,6 +316,16 @@ func CurrentSensing(c currentSensingConfig) (*DeviceRet[bool], error) {
 	}, nil
 }
 
+// Sets the line value according to 'on'.
+// The high/low logic if inverted if activeLow is true.
+func setLineValue(activeLow bool, line *gpiocdev.Line, on bool) error {
+	value := on
+	if activeLow {
+		value = !value
+	}
+	return line.SetValue(map[bool]int{false: 0, true: 1}[value])
+}
+
 // Relay logic. Switches a GPIO pin according to 'isOn' booleans.
 // MQTT: registers as a switch.
 func Relay(c relayConfig, isOn <-chan bool) (*DeviceRet[bool], error) {
@@ -325,7 +341,7 @@ func Relay(c relayConfig, isOn <-chan bool) (*DeviceRet[bool], error) {
 		for {
 			select {
 			case on := <-isOn:
-				line.SetValue(map[bool]int{false: 0, true: 1}[on])
+				setLineValue(c.ActiveLow, line, on)
 			}
 		}
 	}
@@ -384,17 +400,17 @@ func Blinker(c ledConfig, sysLedName string, mode <-chan interface{}) (func(), e
 				switch mm := m.(type) {
 				case LedStatic:
 					timer.Stop()
-					line.SetValue(map[bool]int{false: 0, true: 1}[mm.On])
+					setLineValue(c.ActiveLow, line, mm.On)
 					go setPiLed(mm.On)
 				case LedBlink:
 					isOn = false
-					line.SetValue(0)
+					setLineValue(c.ActiveLow, line, false)
 					go setPiLed(isOn)
 					timer.Reset(mm.Interval)
 				}
 			case <-timer.C:
 				isOn = !isOn
-				line.SetValue(map[bool]int{false: 0, true: 1}[isOn])
+				setLineValue(c.ActiveLow, line, isOn)
 				go setPiLed(isOn)
 			}
 		}
