@@ -174,7 +174,7 @@ func BadgeReader(c badgeReaderConfig) (*DeviceRet[string], error) {
 			for {
 				e, err := device.ReadOne()
 				if err != nil {
-					slog.Warn("badge: could not read event: %v", err)
+					slog.Warn("badge: could not read event", slog.Any("err", err))
 				}
 				if e.Type != evdev.EV_KEY {
 					continue
@@ -509,7 +509,7 @@ func findBadgeReader(c badgeReaderConfig) (*evdev.InputDevice, error) {
 			return device, nil
 		}
 	}
-	return nil, errors.New(fmt.Sprintf("no badge reader found amongst %d devices with ID %04x:%04x", len(paths), c.Vendor, c.Product))
+	return nil, fmt.Errorf("no badge reader found amongst %d devices with ID %04x:%04x", len(paths), c.Vendor, c.Product)
 }
 
 // Finds the GPIO chip by label prefix.
@@ -527,7 +527,7 @@ func findGpioChip() (*gpiocdev.Chip, error) {
 			return c, err
 		}
 	}
-	return nil, errors.New(fmt.Sprintf("no GPIO chip found amongst %d devices with prefix '%s'", len(paths), GPIO_WANTED_PREFIX))
+	return nil, fmt.Errorf("no GPIO chip found amongst %d devices with prefix '%s'", len(paths), GPIO_WANTED_PREFIX)
 }
 
 // Sends a message to systemd notify socket.
