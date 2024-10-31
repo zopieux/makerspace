@@ -2,8 +2,11 @@
 Description=Authbox
 Requires=systemd-time-wait-sync.service
 After=network-online.target
-After=systemd-time-wait-sync.service
+# Needed for local config fallback on SD card.
 After=sdcard.mount
+# Needed so the hostname is correct at launch.
+After=systemd-hostnamed.service
+After=systemd-time-wait-sync.service
 
 [Service]
 Type=notify
