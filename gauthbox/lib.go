@@ -60,8 +60,8 @@ type currentSensingConfig struct {
 }
 
 type mqttConfig struct {
-	Broker string `json:"broker"`
-	Topic  string `json:"topic"`
+	Broker    string `json:"broker"`
+	BaseTopic string `json:"topic"`
 }
 
 type ledConfig struct {
@@ -91,30 +91,23 @@ type BadgingChan = <-chan string
 type CurrentSensingChan = <-chan bool
 type RelayIsOnChan = <-chan bool
 
-type MqttAvailability struct {
-	PayloadAvailable    string `json:"payload_available,omitempty"`
-	PayloadNotAvailable string `json:"payload_not_available,omitempty"`
-	Topic               string `json:"topic"`
-	ValueTemplate       string `json:"value_template,omitempty"`
-}
-type MqttDiscoveryAnnounceFunc func(name string, topic string) interface{}
-type MqttDiscovery struct {
-	Component string
+type MqttComponentDiscoveryFunc func(baseTopic string) HaComponent
+type MqttComponentPublishFunc func(payload interface{}) (string, interface{})
+type MqttComponent struct {
 	Id        string
-	Announce  MqttDiscoveryAnnounceFunc
+	Component MqttComponentDiscoveryFunc
+	Publish   MqttComponentPublishFunc
 }
 type MqttDevice struct {
 	Name         string `json:"string,omitempty"`
 	SerialNumber string `json:"serial_number,omitempty"`
 }
-type PublishFunc = func(topic string, payload interface{})
-
 type DeviceRet[Event any] struct {
-	Looper    func()
-	Events    chan Event
-	OnEvent   func(payload Event, name string, publish PublishFunc)
-	Discovery MqttDiscovery
+	Looper func()
+	Events chan Event
+	Mqtt   MqttComponent
 }
+type PublishFunc = func(b MqttComponent, payload interface{})
 
 // Retrieves the config from command & control, falling back to the SD card if
 // that fails.
@@ -156,7 +149,9 @@ func getConfigLocally() (*AuthboxConfig, error) {
 	}
 	defer f.Close()
 	var config AuthboxConfig
-	json.NewDecoder(f).Decode(&config)
+	if err := json.NewDecoder(f).Decode(&config); err != nil {
+		return nil, err
+	}
 	return &config, nil
 }
 
@@ -227,27 +222,26 @@ func BadgeReader(c badgeReaderConfig) (*DeviceRet[string], error) {
 			}
 		}
 	}
-	announce := func(name string, topic string) interface{} {
-		return struct {
-			Topic         string     `json:"topic"`
-			ValueTemplate string     `json:"value_template,omitempty"`
-			Device        MqttDevice `json:"device"`
-		}{
-			Topic:         topic + "/" + name + "/badged",
-			ValueTemplate: "{{value}}",
-			Device:        MqttDevice{Name: "Badge reader on " + name},
+	announce := func(baseTopic string) HaComponent {
+		return HaComponent{
+			Name:         "Badged in",
+			Platform:     "text",
+			Mode:         "text",
+			Icon:         "mdi:badge-account",
+			BaseTopic:    baseTopic,
+			StateTopic:   "~/state",
+			CommandTopic: "~/set", // Ignored, read-only.
 		}
 	}
 	return &DeviceRet[string]{
 		Looper: looper,
 		Events: events,
-		OnEvent: func(badgeId string, name string, publish PublishFunc) {
-			publish(name+"/badged", badgeId)
-		},
-		Discovery: MqttDiscovery{
-			Component: "tag",
-			Id:        "badge_reader",
-			Announce:  announce,
+		Mqtt: MqttComponent{
+			Id:        "badge",
+			Component: announce,
+			Publish: func(badgeId interface{}) (string, interface{}) {
+				return "/state", badgeId.(string)
+			},
 		},
 	}, nil
 }
@@ -293,24 +287,21 @@ func CurrentSensing(c currentSensingConfig) (*DeviceRet[bool], error) {
 	return &DeviceRet[bool]{
 		Looper: looper,
 		Events: events,
-		OnEvent: func(isHigh bool, name string, publish func(string, interface{})) {
-			publish(name+"/current", map[bool]string{false: "0", true: "42"}[isHigh])
-		},
-		Discovery: MqttDiscovery{
-			Component: "switch",
-			Id:        "current_sensor",
-			Announce: func(name, topic string) interface{} {
-				return struct {
-					Device      MqttDevice `json:"device"`
-					DeviceClass string     `json:"device_class"`
-					StateTopic  string     `json:"state_topic"`
-					Unit        string     `json:"unit_of_measurement"`
-				}{
-					Device:      MqttDevice{Name: "Current sensor on " + name},
-					DeviceClass: "current",
-					StateTopic:  topic + "/" + name + "/current",
-					Unit:        "A",
+		Mqtt: MqttComponent{
+			Id: "current",
+			Component: func(baseTopic string) HaComponent {
+				return HaComponent{
+					Name:              "Current sensing",
+					Platform:          "sensor",
+					DeviceClass:       "current",
+					UnitOfMeasurement: "A",
+					BaseTopic:         baseTopic,
+					StateTopic:        "~/state",
 				}
+			},
+			Publish: func(isHigh interface{}) (string, interface{}) {
+				// Dummy non-zero value (10 Amperes) when on.
+				return "/state", map[bool]string{false: "0", true: "10"}[isHigh.(bool)]
 			},
 		},
 	}, nil
@@ -345,28 +336,26 @@ func Relay(c relayConfig, isOn <-chan bool) (*DeviceRet[bool], error) {
 			}
 		}
 	}
-	discovery := MqttDiscovery{
-		Component: "switch",
-		Id:        "relay",
-		Announce: func(name, topic string) interface{} {
-			return struct {
-				Device       MqttDevice `json:"device"`
-				CommandTopic string     `json:"command_topic"`
-				StateTopic   string     `json:"state_topic"`
-			}{
-				Device:       MqttDevice{Name: "Relay on " + name},
-				CommandTopic: topic + "/" + name + "/relay/set", // ignored, read-only
-				StateTopic:   topic + "/" + name + "/relay",
+	discovery := MqttComponent{
+		Id: "relay",
+		Component: func(baseTopic string) HaComponent {
+			return HaComponent{
+				Name:         "Relay",
+				Platform:     "switch",
+				Icon:         "mdi:power-socket-ch",
+				BaseTopic:    baseTopic,
+				StateTopic:   "~/state",
+				CommandTopic: "~/set", // Ignored, read-only.
 			}
+		},
+		Publish: func(isOn interface{}) (string, interface{}) {
+			return "/state", map[bool]string{false: "OFF", true: "ON"}[isOn.(bool)]
 		},
 	}
 	return &DeviceRet[bool]{
 		Looper: looper,
 		Events: nil,
-		OnEvent: func(isOn bool, name string, publish func(string, interface{})) {
-			publish(name+"/relay", map[bool]string{false: "OFF", true: "ON"}[isOn])
-		},
-		Discovery: discovery,
+		Mqtt:   discovery,
 	}, nil
 }
 
@@ -421,9 +410,51 @@ type MqttEvent struct {
 	DisconnectedError error
 }
 
-// Publish to MQTT logic. At connect time, publishes Home Assistant discovery messages.
+// https://www.home-assistant.io/integrations/mqtt/#supported-abbreviations-in-mqtt-discovery-messages
+type haDevice struct {
+	ConfigurationUrl string     `json:"configuration_url,omitempty"`
+	Connections      [][]string `json:"connections,omitempty"`
+	Identifiers      []string   `json:"identifiers,omitempty"`
+	Name             string     `json:"name,omitempty"`
+	Manufacturer     string     `json:"manufacturer,omitempty"`
+	Model            string     `json:"model,omitempty"`
+	ModelId          string     `json:"model_id,omitempty"`
+	HwVersion        string     `json:"hw_version,omitempty"`
+	SwVersion        string     `json:"sw_version,omitempty"`
+	SuggestedArea    string     `json:"suggested_area,omitempty"`
+	SerialNumber     string     `json:"serial_number,omitempty"`
+}
+type haOrigin struct {
+	Name       string `json:"name"`
+	SwVersion  string `json:"sw,omitempty"`
+	SupportUrl string `json:"url,omitempty"`
+}
+type HaComponent struct {
+	Platform          string `json:"p"` // Required.
+	Type              string `json:"type,omitempty"`
+	SubType           string `json:"subtype,omitempty"`
+	DeviceClass       string `json:"device_class,omitempty"`
+	AutomationType    string `json:"automation_type,omitempty"`
+	BaseTopic         string `json:"~,omitempty"`
+	Topic             string `json:"topic,omitempty"`
+	CommandTopic      string `json:"command_topic,omitempty"`
+	StateTopic        string `json:"state_topic,omitempty"`
+	Icon              string `json:"icon,omitempty"`
+	UnitOfMeasurement string `json:"unit_of_measurement,omitempty"`
+	ValueTemplate     string `json:"value_template,omitempty"`
+	UniqueId          string `json:"unique_id,omitempty"`
+	Mode              string `json:"mode,omitempty"`
+	Name              string `json:"name,omitempty"`
+}
+type haDeviceConfig struct {
+	Device     haDevice               `json:"device"`
+	Origin     haOrigin               `json:"origin"`
+	Components map[string]HaComponent `json:"components"`
+}
+
+// Publish/subscribe to MQTT logic. At connect time, publishes the Home Assistant config discovery message.
 // Use the returned PublishFunc to publish messages using the configured topic prefix.
-func MqttBroker(name string, c mqttConfig, discoveries []MqttDiscovery) (func(), <-chan MqttEvent, PublishFunc) {
+func MqttBroker(name string, c mqttConfig, discoveries []MqttComponent) (func(), <-chan MqttEvent, PublishFunc) {
 	opts := mqtt.NewClientOptions()
 	opts.AddBroker(c.Broker)
 	opts.SetClientID("authbox/" + name)
@@ -431,18 +462,46 @@ func MqttBroker(name string, c mqttConfig, discoveries []MqttDiscovery) (func(),
 	opts.SetConnectTimeout(time.Second * 2)
 	opts.SetConnectRetryInterval(time.Second * 2)
 
+	haDeviceId := "authbox_" + name
+	haConfigTopic := "homeassistant/device/" + haDeviceId + "/config"
+	deviceTopicPrefix := c.BaseTopic + "/" + haDeviceId
+
+	componentTopic := func(componentId string) string {
+		return deviceTopicPrefix + "/" + componentId
+	}
+
 	events := make(chan MqttEvent)
 
-	sendDiscoveries := func(mc mqtt.Client) {
+	sendDeviceConfig := func(mc mqtt.Client) {
+		components := map[string]HaComponent{}
 		for _, d := range discoveries {
-			bytes, err := json.Marshal(d.Announce(name, c.Topic))
-			if err != nil {
-				slog.Error("could not marshall JSON for Home Assistant discovery", slog.Any("error", err))
-				continue
-			}
-			if t := mc.Publish("homeassistant/"+d.Component+"/"+d.Id+"/config", 0, true, string(bytes)); t.Wait() && t.Error() != nil {
-				slog.Error("error publishing Home Assistant discovery", slog.Any("error", t.Error()))
-			}
+			uniqueId := haDeviceId + "_" + d.Id
+			c := HaComponent(d.Component(componentTopic(d.Id)))
+			c.UniqueId = uniqueId
+			components[uniqueId] = c
+		}
+		devConfig := haDeviceConfig{
+			Device: haDevice{
+				Name:         name,
+				Identifiers:  []string{haDeviceId},
+				// TODO: Don't hard-code.
+				Model:        "Button-less (Woodshop)",
+				Manufacturer: "Zurich Makerspace Organizers",
+				SwVersion:    "gauthbox ⋅ v1",
+				HwVersion:    "Pi 3B+ PoE",
+			},
+			Origin: haOrigin{
+				Name: name,
+			},
+			Components: components,
+		}
+		bytes, err := json.Marshal(devConfig)
+		if err != nil {
+			slog.Error("could not marshall JSON for Home Assistant discovery config", slog.Any("error", err))
+			return
+		}
+		if t := mc.Publish(haConfigTopic, 0, true, string(bytes)); t.Wait() && t.Error() != nil {
+			slog.Error("error publishing Home Assistant discovery config to MQTT", slog.Any("error", t.Error()))
 		}
 	}
 
@@ -451,7 +510,7 @@ func MqttBroker(name string, c mqttConfig, discoveries []MqttDiscovery) (func(),
 	})
 	opts.SetOnConnectHandler(func(mc mqtt.Client) {
 		events <- MqttEvent{DisconnectedError: nil}
-		sendDiscoveries(mc)
+		sendDeviceConfig(mc)
 	})
 
 	mc := mqtt.NewClient(opts)
@@ -467,9 +526,11 @@ func MqttBroker(name string, c mqttConfig, discoveries []MqttDiscovery) (func(),
 		}
 	}
 
-	publish := func(topic string, payload interface{}) {
-		if t := mc.Publish(c.Topic+"/"+topic, 0, false, payload); t.Wait() && t.Error() != nil {
-			slog.Error("could not publish to mqtt", slog.Any("error", t.Error()))
+	publish := func(b MqttComponent, payload interface{}) {
+		topicSuffix, pubPayload := b.Publish(payload)
+		topic := componentTopic(b.Id) + topicSuffix
+		if t := mc.Publish(topic, 0, false, pubPayload); t.Wait() && t.Error() != nil {
+			slog.Error("error publishing component MQTT message", slog.String("component", b.Id), slog.Any("error", t.Error()))
 		}
 	}
 
@@ -514,7 +575,6 @@ func findBadgeReader(c badgeReaderConfig) (*evdev.InputDevice, error) {
 	for _, d := range paths {
 		device, err := evdev.Open(d.Path)
 		if err != nil {
-			println("onoes open")
 			return nil, err
 		}
 		inpId, err := device.InputID()

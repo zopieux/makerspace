@@ -22,6 +22,7 @@ type State struct {
 	badgeId string
 
 	relay         bool
+	currentIsHigh bool
 	mqttConnected bool
 }
 
@@ -32,61 +33,62 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Usage: %s <control-command URL>\n", os.Args[0])
 		os.Exit(1)
 	}
+	ccUrl := os.Args[1]
 
 	name, err := os.Hostname()
 	if err != nil {
-		panic(err)
+		log.Fatalf("could not retrieve self hostname: %s", err)
 	}
 
-	config, err := gauthbox.GetConfig(os.Args[1])
+	config, err := gauthbox.GetConfig(ccUrl)
 	if err != nil {
-		panic(err)
+		log.Fatalf("could not retrieve or parse remote nor local config: %s", err)
 	}
 	slog.Info("got config", slog.Any("config", config))
 
-	mqttDisco := []gauthbox.MqttDiscovery{}
+	mqttComponents := []gauthbox.MqttComponent{}
 
 	badgeDev, err := gauthbox.BadgeReader(config.BadgeReader)
 	if err != nil {
-		log.Fatalf("badge init: %s", err)
+		log.Fatalf("could not initialize badge reader: %s", err)
 	}
-	mqttDisco = append(mqttDisco, badgeDev.Discovery)
+	mqttComponents = append(mqttComponents, badgeDev.Mqtt)
 	go badgeDev.Looper()
 
 	currentSenseDev, err := gauthbox.CurrentSensing(config.CurrentSensing)
 	if err != nil {
-		log.Fatalf("current sensing init: %s", err)
+		log.Fatalf("could not initialize current sensing: %s", err)
 	}
-	mqttDisco = append(mqttDisco, currentSenseDev.Discovery)
+	mqttComponents = append(mqttComponents, currentSenseDev.Mqtt)
 	go currentSenseDev.Looper()
 
 	relay := make(chan bool)
 	relayDev, err := gauthbox.Relay(config.Relay, relay)
 	if err != nil {
-		log.Fatalf("relay init: %s", err)
+		log.Fatalf("could not initialize relay: %s", err)
 	}
-	mqttDisco = append(mqttDisco, relayDev.Discovery)
+	mqttComponents = append(mqttComponents, relayDev.Mqtt)
 	go relayDev.Looper()
 
 	green := make(chan interface{})
 	greenLed, err := gauthbox.Blinker(config.GreenLed, "ACT", green)
 	if err != nil {
-		log.Fatalf("green led init: %s", err)
+		log.Fatalf("could not initialize green led: %s", err)
 	}
 	go greenLed()
 
 	red := make(chan interface{})
 	redLed, err := gauthbox.Blinker(config.RedLed, "PWR", red)
 	if err != nil {
-		log.Fatalf("red led init: %s", err)
+		log.Fatalf("could not initialize red led: %s", err)
 	}
 	go redLed()
 
-	var publish gauthbox.PublishFunc = func(string, interface{}) {}
+	var mqttPublish gauthbox.PublishFunc = func(gauthbox.MqttComponent, interface{}) {}
 	var mqttEvents <-chan gauthbox.MqttEvent
 	if config.MqttBroker != nil {
 		var mqttLooper func()
-		mqttLooper, mqttEvents, publish = gauthbox.MqttBroker(name, *config.MqttBroker, mqttDisco)
+		mqttLooper, mqttEvents, mqttPublish = gauthbox.MqttBroker(name, *config.MqttBroker, mqttComponents)
 		go mqttLooper()
 	}
 
@@ -103,7 +105,7 @@ func main() {
 	setRelay := func(on bool) {
 		state.relay = on
 		relay <- on
-		go relayDev.OnEvent(on, name, publish)
+		go mqttPublish(relayDev.Mqtt, on)
 	}
 
 	notifyState := func() {
@@ -126,13 +128,16 @@ func main() {
 			// Not being able to communicate with MQTT is non-fatal.
 			if e.DisconnectedError == nil {
 				state.mqttConnected = true
+				// Re-publish state so it's fresh.
+				go mqttPublish(currentSenseDev.Mqtt, state.currentIsHigh)
+				go mqttPublish(relayDev.Mqtt, state.relay)
+				go mqttPublish(badgeDev.Mqtt, state.badgeId)
 			} else {
 				state.mqttConnected = false
 			}
 			go notifyState()
 		case badgeId := <-badgeDev.Events:
 			// Someone badged.
-			go badgeDev.OnEvent(badgeId, name, publish)
 			if state.state == STATE_IN_USE {
 				// If the tool is already in active use, nothing to do.
 				continue
@@ -156,11 +161,13 @@ func main() {
 				green <- gauthbox.LedBlink{Interval: time.Millisecond * 500}
 				red <- gauthbox.LedStatic{On: false}
 				setRelay(true)
+				go mqttPublish(badgeDev.Mqtt, state.badgeId)
 				go notifyState()
 			}
 		case currentIsHigh := <-currentSenseDev.Events:
 			// Current sensing went up or down.
-			go currentSenseDev.OnEvent(currentIsHigh, name, publish)
+			state.currentIsHigh = currentIsHigh
+			go mqttPublish(currentSenseDev.Mqtt, state.currentIsHigh)
 			switch {
 			case currentIsHigh:
 				if state.state != STATE_IDLE {
@@ -216,6 +223,7 @@ func main() {
 					}
 				}(state.badgeId)
 				state.badgeId = ""
+				go mqttPublish(badgeDev.Mqtt, state.badgeId)
 				go notifyState()
 			}
 		}
