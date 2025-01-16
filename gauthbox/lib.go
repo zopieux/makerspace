@@ -224,13 +224,11 @@ func BadgeReader(c badgeReaderConfig) (*DeviceRet[string], error) {
 	}
 	announce := func(baseTopic string) HaComponent {
 		return HaComponent{
-			Name:         "Badged in",
-			Platform:     "text",
-			Mode:         "text",
-			Icon:         "mdi:badge-account",
-			BaseTopic:    baseTopic,
-			StateTopic:   "~/state",
-			CommandTopic: "~/set", // Ignored, read-only.
+			Name:       "Badged in",
+			Platform:   "sensor",
+			Icon:       "mdi:badge-account",
+			BaseTopic:  baseTopic,
+			StateTopic: "~/state",
 		}
 	}
 	return &DeviceRet[string]{
@@ -341,7 +339,8 @@ func Relay(c relayConfig, isOn <-chan bool) (*DeviceRet[bool], error) {
 		Component: func(baseTopic string) HaComponent {
 			return HaComponent{
 				Name:         "Relay",
-				Platform:     "switch",
+				Platform:     "binary_sensor",
+				DeviceClass:  "power",
 				Icon:         "mdi:power-socket-ch",
 				BaseTopic:    baseTopic,
 				StateTopic:   "~/state",
@@ -482,8 +481,8 @@ func MqttBroker(name string, c mqttConfig, discoveries []MqttComponent) (func(),
 		}
 		devConfig := haDeviceConfig{
 			Device: haDevice{
-				Name:         name,
-				Identifiers:  []string{haDeviceId},
+				Name:        name,
+				Identifiers: []string{haDeviceId},
 				// TODO: Don't hard-code.
 				Model:        "Button-less (Woodshop)",
 				Manufacturer: "Zurich Makerspace Organizers",
