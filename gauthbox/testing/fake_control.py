@@ -17,18 +17,20 @@ async def config(name: str):
             "usage_duration_minutes": 10
         },
         "relay": {
-            "pin": 23,
+            "pin": 21,
+            "active_low": True,
             "debounce_ms": 25
         },
         "current_sensing": {
-            "pin": 24,
+            "pin": 23,
+            "active_low": True,
             "debounce_ms": 200
         },
         "green_led": {
-            "pin": 5
+            "pin": 26
         },
         "red_led": {
-            "pin": 6
+            "pin": 20
         },
         "mqtt": {
             "broker": "mqtt://control.shop:1883",
