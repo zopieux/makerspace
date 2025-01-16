@@ -138,3 +138,24 @@ jobs:
           name: rpi-authbox-${{ steps.short-sha.outputs.sha }}
           files: ${{ env.BUILD }}/rpi-authbox.7z
           fail_on_unmatched_files: true
+
+  build_authbox_config:
+    runs-on: ubuntu-latest
+    name: build authbox_config for x86_64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          cache-dependency-path: gauthbox/go.sum
+
+      - name: Build
+        run: cd gauthbox && go build -v ./cmd/config/authbox_config.go
+      
+      - name: Upload authbox_config
+        uses: actions/upload-artifact@v4
+        with:
+          name: authbox_config
+          path: gauthbox/authbox_config
