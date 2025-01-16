@@ -430,6 +430,7 @@ type haOrigin struct {
 }
 type HaComponent struct {
 	Platform          string `json:"p"` // Required.
+	AvailabilityTopic string `json:"availability_topic,omitempty"`
 	Type              string `json:"type,omitempty"`
 	SubType           string `json:"subtype,omitempty"`
 	DeviceClass       string `json:"device_class,omitempty"`
@@ -454,16 +455,20 @@ type haDeviceConfig struct {
 // Publish/subscribe to MQTT logic. At connect time, publishes the Home Assistant config discovery message.
 // Use the returned PublishFunc to publish messages using the configured topic prefix.
 func MqttBroker(name string, c mqttConfig, discoveries []MqttComponent) (func(), <-chan MqttEvent, PublishFunc) {
+	haDeviceId := "authbox_" + name
+
+	deviceTopicPrefix := c.BaseTopic + "/" + haDeviceId
+	deviceAvailabilityTopic := deviceTopicPrefix + "/availability"
+
+	haConfigTopic := "homeassistant/device/" + haDeviceId + "/config"
+
 	opts := mqtt.NewClientOptions()
 	opts.AddBroker(c.Broker)
 	opts.SetClientID("authbox/" + name)
 	opts.SetAutoReconnect(true)
 	opts.SetConnectTimeout(time.Second * 2)
 	opts.SetConnectRetryInterval(time.Second * 2)
-
-	haDeviceId := "authbox_" + name
-	haConfigTopic := "homeassistant/device/" + haDeviceId + "/config"
-	deviceTopicPrefix := c.BaseTopic + "/" + haDeviceId
+	opts.SetWill(deviceAvailabilityTopic, "offline", 0, false)
 
 	componentTopic := func(componentId string) string {
 		return deviceTopicPrefix + "/" + componentId
@@ -477,6 +482,7 @@ func MqttBroker(name string, c mqttConfig, discoveries []MqttComponent) (func(),
 			uniqueId := haDeviceId + "_" + d.Id
 			c := HaComponent(d.Component(componentTopic(d.Id)))
 			c.UniqueId = uniqueId
+			c.AvailabilityTopic = deviceAvailabilityTopic
 			components[uniqueId] = c
 		}
 		devConfig := haDeviceConfig{
@@ -510,6 +516,9 @@ func MqttBroker(name string, c mqttConfig, discoveries []MqttComponent) (func(),
 	opts.SetOnConnectHandler(func(mc mqtt.Client) {
 		events <- MqttEvent{DisconnectedError: nil}
 		sendDeviceConfig(mc)
+		if t := mc.Publish(deviceAvailabilityTopic, 0, false, "online"); t.Wait() && t.Error() != nil {
+			slog.Error("error publishing availability", slog.Any("error", t.Error()))
+		}
 	})
 
 	mc := mqtt.NewClient(opts)
