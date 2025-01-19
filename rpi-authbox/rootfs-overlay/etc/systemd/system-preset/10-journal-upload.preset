@@ -1,0 +1,2 @@
+# Fight against https://github.com/systemd/systemd/blob/main/presets/90-systemd.preset#L53
+enable systemd-journal-upload.*
