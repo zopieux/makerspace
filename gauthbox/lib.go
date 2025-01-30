@@ -458,7 +458,7 @@ func MqttBroker(name string, c mqttConfig, discoveries []MqttComponent) (func(),
 	haDeviceId := "authbox_" + name
 
 	deviceTopicPrefix := c.BaseTopic + "/" + haDeviceId
-	deviceAvailabilityTopic := deviceTopicPrefix + "/availability"
+	deviceAvailabilityTopic := deviceTopicPrefix + "/LWT"
 
 	haConfigTopic := "homeassistant/device/" + haDeviceId + "/config"
 
@@ -468,7 +468,7 @@ func MqttBroker(name string, c mqttConfig, discoveries []MqttComponent) (func(),
 	opts.SetAutoReconnect(true)
 	opts.SetConnectTimeout(time.Second * 2)
 	opts.SetConnectRetryInterval(time.Second * 2)
-	opts.SetWill(deviceAvailabilityTopic, "offline", 0, false)
+	opts.SetWill(deviceAvailabilityTopic, "offline", 0, true)
 
 	componentTopic := func(componentId string) string {
 		return deviceTopicPrefix + "/" + componentId
@@ -516,7 +516,7 @@ func MqttBroker(name string, c mqttConfig, discoveries []MqttComponent) (func(),
 	opts.SetOnConnectHandler(func(mc mqtt.Client) {
 		events <- MqttEvent{DisconnectedError: nil}
 		sendDeviceConfig(mc)
-		if t := mc.Publish(deviceAvailabilityTopic, 0, false, "online"); t.Wait() && t.Error() != nil {
+		if t := mc.Publish(deviceAvailabilityTopic, 0, true, "online"); t.Wait() && t.Error() != nil {
 			slog.Error("error publishing availability", slog.Any("error", t.Error()))
 		}
 	})
