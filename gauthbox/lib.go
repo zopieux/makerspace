@@ -405,9 +405,9 @@ func Blinker(c ledConfig, sysLedName string, mode <-chan interface{}) (func(), e
 	}, nil
 }
 
-type MqttEvent struct {
-	DisconnectedError error
-}
+type MqttConnected struct{}
+type MqttDisonnected struct{ Error error }
+type MqttResetRequest struct{}
 
 // https://www.home-assistant.io/integrations/mqtt/#supported-abbreviations-in-mqtt-discovery-messages
 type haDevice struct {
@@ -454,11 +454,12 @@ type haDeviceConfig struct {
 
 // Publish/subscribe to MQTT logic. At connect time, publishes the Home Assistant config discovery message.
 // Use the returned PublishFunc to publish messages using the configured topic prefix.
-func MqttBroker(name string, c mqttConfig, discoveries []MqttComponent) (func(), <-chan MqttEvent, PublishFunc) {
+func MqttBroker(name string, c mqttConfig, discoveries []MqttComponent) (func(), <-chan interface{}, PublishFunc) {
 	haDeviceId := "authbox_" + name
 
 	deviceTopicPrefix := c.BaseTopic + "/" + haDeviceId
 	deviceAvailabilityTopic := deviceTopicPrefix + "/LWT"
+	resetTopic := c.BaseTopic + "/reset"
 
 	haConfigTopic := "homeassistant/device/" + haDeviceId + "/config"
 
@@ -474,7 +475,7 @@ func MqttBroker(name string, c mqttConfig, discoveries []MqttComponent) (func(),
 		return deviceTopicPrefix + "/" + componentId
 	}
 
-	events := make(chan MqttEvent)
+	events := make(chan interface{})
 
 	sendDeviceConfig := func(mc mqtt.Client) {
 		components := map[string]HaComponent{}
@@ -511,10 +512,17 @@ func MqttBroker(name string, c mqttConfig, discoveries []MqttComponent) (func(),
 	}
 
 	opts.SetConnectionLostHandler(func(c mqtt.Client, err error) {
-		events <- MqttEvent{DisconnectedError: err}
+		events <- MqttDisonnected{Error: err}
 	})
 	opts.SetOnConnectHandler(func(mc mqtt.Client) {
-		events <- MqttEvent{DisconnectedError: nil}
+		events <- MqttConnected{}
+		mc.Subscribe(resetTopic, 0, func(_ mqtt.Client, m mqtt.Message) {
+			payload := string(m.Payload())
+			// Empty payload means all, otherwise only the requested name is reset.
+			if payload == "" || payload == name {
+				events <- MqttResetRequest{}
+			}
+		})
 		sendDeviceConfig(mc)
 		if t := mc.Publish(deviceAvailabilityTopic, 0, true, "online"); t.Wait() && t.Error() != nil {
 			slog.Error("error publishing availability", slog.Any("error", t.Error()))
@@ -526,7 +534,7 @@ func MqttBroker(name string, c mqttConfig, discoveries []MqttComponent) (func(),
 	looper := func() {
 		for {
 			if t := mc.Connect(); t.Wait() && t.Error() != nil {
-				events <- MqttEvent{DisconnectedError: t.Error()}
+				events <- MqttDisonnected{Error: t.Error()}
 				time.Sleep(time.Second * 5)
 			} else {
 				return

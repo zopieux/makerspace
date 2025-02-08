@@ -85,7 +85,7 @@ func main() {
 	go redLed()
 
 	var mqttPublish gauthbox.PublishFunc = func(gauthbox.MqttComponent, interface{}) {}
-	var mqttEvents <-chan gauthbox.MqttEvent
+	var mqttEvents <-chan interface{}
 	if config.MqttBroker != nil {
 		var mqttLooper func()
 		mqttLooper, mqttEvents, mqttPublish = gauthbox.MqttBroker(name, *config.MqttBroker, mqttComponents)
@@ -101,6 +101,16 @@ func main() {
 	badgeExpired.Stop()
 
 	state := State{state: STATE_OFF, badgeId: "", relay: false, mqttConnected: false}
+
+	pleaseSelfReset := false
+	maybeSelfReset := func() {
+		// Only reset if we're in the OFF state to avoid shutting down in-use
+		// machinery.
+		if pleaseSelfReset && state.state == STATE_OFF {
+			// Exit with error. The process manager will restart us.
+			os.Exit(42)
+		}
+	}
 
 	setRelay := func(on bool) {
 		state.relay = on
@@ -124,18 +134,24 @@ func main() {
 	for {
 		select {
 		case e := <-mqttEvents:
-			// Nothing special, just report the state.
-			// Not being able to communicate with MQTT is non-fatal.
-			if e.DisconnectedError == nil {
+			switch event := e.(type) {
+			case gauthbox.MqttConnected:
 				state.mqttConnected = true
 				// Re-publish state so it's fresh.
 				go mqttPublish(currentSenseDev.Mqtt, state.currentIsHigh)
 				go mqttPublish(relayDev.Mqtt, state.relay)
 				go mqttPublish(badgeDev.Mqtt, state.badgeId)
-			} else {
+				go notifyState()
+			case gauthbox.MqttDisonnected:
+				// Nothing special, just report the state.
+				// Not being able to communicate with MQTT is non-fatal.
 				state.mqttConnected = false
+				slog.Warn("lost mqtt broken connection", slog.Any("error", event.Error))
+				go notifyState()
+			case gauthbox.MqttResetRequest:
+				pleaseSelfReset = true
+				maybeSelfReset()
 			}
-			go notifyState()
 		case badgeId := <-badgeDev.Events:
 			// Someone badged.
 			if state.state == STATE_IN_USE {
@@ -225,6 +241,7 @@ func main() {
 				state.badgeId = ""
 				go mqttPublish(badgeDev.Mqtt, state.badgeId)
 				go notifyState()
+				maybeSelfReset()
 			}
 		}
 	}
