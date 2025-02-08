@@ -135,6 +135,9 @@ func getConfigRemotely(hostname, ccUrl string) (*AuthboxConfig, error) {
 	if err != nil {
 		return nil, err
 	}
+	if !(200 <= resp.StatusCode && resp.StatusCode < 300) {
+		return nil, fmt.Errorf("HTTP error requesting config: %d (%s)", resp.StatusCode, resp.Status)
+	}
 	defer resp.Body.Close()
 	var config AuthboxConfig
 	json.NewDecoder(resp.Body).Decode(&config)
