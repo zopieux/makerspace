@@ -21,13 +21,10 @@ type State struct {
 	state   int
 	badgeId string
 
+	accessAllowed bool
 	relay         bool
 	currentIsHigh bool
 	mqttConnected bool
-}
-
-func (s State) badgedIn() bool {
-	return s.badgeId != ""
 }
 
 func main() {
@@ -58,6 +55,14 @@ func main() {
 	}
 	mqttComponents = append(mqttComponents, badgeDev.Mqtt)
 	go badgeDev.Looper()
+
+	accessAllowed := make(chan bool)
+	accessDev, err := gauthbox.AccessAllowed(accessAllowed)
+	if err != nil {
+		log.Fatalf("could not initialize access-allowed: %s", err)
+	}
+	mqttComponents = append(mqttComponents, accessDev.Mqtt)
+	go accessDev.Looper()
 
 	currentSenseDev, err := gauthbox.CurrentSensing(config.CurrentSensing)
 	if err != nil {
@@ -104,7 +109,7 @@ func main() {
 	badgeExpired := time.NewTimer(0)
 	badgeExpired.Stop()
 
-	state := State{state: STATE_OFF, badgeId: "", relay: false, mqttConnected: false}
+	state := State{state: STATE_OFF, badgeId: "", accessAllowed: true, relay: false, mqttConnected: false}
 
 	pleaseSelfReset := false
 	maybeSelfReset := func() {
@@ -156,10 +161,20 @@ func main() {
 				pleaseSelfReset = true
 				maybeSelfReset()
 			}
+		case allowed := <-accessAllowed:
+			state.accessAllowed = allowed
+			slog.Info("access allowed changed", slog.Bool("allowed", allowed))
 		case badgeId := <-badgeDev.Events:
 			// Someone badged.
 			if state.state == STATE_IN_USE {
 				// If the tool is already in active use, nothing to do.
+				continue
+			}
+			if !state.accessAllowed {
+				red <- gauthbox.LedBlink{Interval: time.Millisecond * 120}
+				time.Sleep(time.Millisecond * 1200)
+				red <- gauthbox.LedStatic{On: true}
+				slog.Warn("badging attempt while access is disallowed", slog.String("id", badgeId))
 				continue
 			}
 			// Otherwise, the tool is either OFF or in grace period (IDLE).
@@ -251,13 +266,18 @@ func main() {
 	}
 }
 
+func (s State) badgedIn() bool {
+	return s.badgeId != ""
+}
+
 func (s State) String() string {
-	return fmt.Sprintf("state: %s, badged-in: %s, relay: %s, mqtt: %s",
+	return fmt.Sprintf("state: %s, allowed: %s, badged-in: %s, relay: %s, mqtt: %s",
 		map[int]string{
 			STATE_OFF:    "OFF (unauthenticated)",
 			STATE_IDLE:   "IDLE (authenticated)",
 			STATE_IN_USE: "IN USE (authenticated, drawing current)",
 		}[s.state],
+		map[bool]string{false: "no", true: "yes"}[s.accessAllowed],
 		map[bool]string{false: "no", true: "yes"}[s.badgedIn()],
 		map[bool]string{false: "off", true: "on"}[s.relay],
 		map[bool]string{false: "disconnected", true: "connected"}[s.mqttConnected])

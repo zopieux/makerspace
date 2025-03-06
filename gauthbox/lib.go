@@ -93,10 +93,16 @@ type RelayIsOnChan = <-chan bool
 
 type MqttComponentDiscoveryFunc func(baseTopic string) HaComponent
 type MqttComponentPublishFunc func(payload interface{}) (string, interface{})
+type MqttSub struct {
+	Topic    string
+	Callback func(topic string, payload string)
+}
+type MqttComponentSubscribeFunc func() []MqttSub
 type MqttComponent struct {
 	Id        string
 	Component MqttComponentDiscoveryFunc
 	Publish   MqttComponentPublishFunc
+	Subscribe []MqttSub
 }
 type MqttDevice struct {
 	Name         string `json:"string,omitempty"`
@@ -241,7 +247,7 @@ func BadgeReader(c badgeReaderConfig) (*DeviceRet[string], error) {
 			Id:        "badge",
 			Component: announce,
 			Publish: func(badgedIn interface{}) (string, interface{}) {
-				return "/state", badgedIn.(bool)
+				return "/state", map[bool]string{false: "OFF", true: "ON"}[badgedIn.(bool)]
 			},
 		},
 	}, nil
@@ -361,6 +367,43 @@ func Relay(c relayConfig, isOn <-chan bool) (*DeviceRet[bool], error) {
 	}, nil
 }
 
+// Out-of-order toggle. Prevents badging-in when locked (off).
+func AccessAllowed(isAllowed chan<- bool) (*DeviceRet[bool], error) {
+	discovery := MqttComponent{
+		Id: "access",
+		Component: func(baseTopic string) HaComponent {
+			return HaComponent{
+				Name:         "Access allowed",
+				Platform:     "switch",
+				DeviceClass:  "switch",
+				BaseTopic:    baseTopic,
+				Icon:         "mdi:lock-open-variant",
+				CommandTopic: "~/set",
+				PayloadOn:    "ON",
+				PayloadOff:   "OFF",
+				// We want retained values so we can get the value upon boot.
+				Retain: true,
+			}
+		},
+		Subscribe: []MqttSub{{
+			Topic: "/set",
+			Callback: func(topic string, payload string) {
+				isAllowed <- strings.ToLower(payload) == "on"
+			},
+		}},
+	}
+	looper := func() {
+		for {
+			time.Sleep(time.Second * 60)
+		}
+	}
+	return &DeviceRet[bool]{
+		Looper: looper,
+		Events: nil,
+		Mqtt:   discovery,
+	}, nil
+}
+
 // Blinker utility to set a GPIO LED in either static or blink mode.
 // To change the state, send either LedStatic{On: bool} or LedBlink{Interval: Duration} to chan 'mode'.
 // If sysLedName is non-empty, this also controls the on-board LED at /sys/class/leds/<sysLedName>.
@@ -441,6 +484,9 @@ type HaComponent struct {
 	BaseTopic         string `json:"~,omitempty"`
 	Topic             string `json:"topic,omitempty"`
 	CommandTopic      string `json:"command_topic,omitempty"`
+	PayloadOn         string `json:"payload_on,omitempty"`
+	PayloadOff        string `json:"payload_off,omitempty"`
+	Retain            bool   `json:"retain,omitempty"`
 	StateTopic        string `json:"state_topic,omitempty"`
 	Icon              string `json:"icon,omitempty"`
 	UnitOfMeasurement string `json:"unit_of_measurement,omitempty"`
@@ -529,6 +575,13 @@ func MqttBroker(name string, c mqttConfig, discoveries []MqttComponent) (func(),
 		sendDeviceConfig(mc)
 		if t := mc.Publish(deviceAvailabilityTopic, 0, true, "online"); t.Wait() && t.Error() != nil {
 			slog.Error("error publishing availability", slog.Any("error", t.Error()))
+		}
+		for _, d := range discoveries {
+			for _, sub := range d.Subscribe {
+				mc.Subscribe(componentTopic(d.Id)+sub.Topic, 0, func(c mqtt.Client, m mqtt.Message) {
+					sub.Callback(m.Topic(), string(m.Payload()))
+				})
+			}
 		}
 	})
 
