@@ -240,8 +240,8 @@ func BadgeReader(c badgeReaderConfig) (*DeviceRet[string], error) {
 		Mqtt: MqttComponent{
 			Id:        "badge",
 			Component: announce,
-			Publish: func(badgeId interface{}) (string, interface{}) {
-				return "/state", badgeId.(string)
+			Publish: func(badgedIn interface{}) (string, interface{}) {
+				return "/state", badgedIn.(bool)
 			},
 		},
 	}, nil

@@ -26,6 +26,10 @@ type State struct {
 	mqttConnected bool
 }
 
+func (s State) badgedIn() bool {
+	return s.badgeId != ""
+}
+
 func main() {
 	slog.SetDefault(slog.New(slogenv.NewHandler(slog.NewTextHandler(os.Stderr, nil))))
 
@@ -140,7 +144,7 @@ func main() {
 				// Re-publish state so it's fresh.
 				go mqttPublish(currentSenseDev.Mqtt, state.currentIsHigh)
 				go mqttPublish(relayDev.Mqtt, state.relay)
-				go mqttPublish(badgeDev.Mqtt, state.badgeId)
+				go mqttPublish(badgeDev.Mqtt, state.badgedIn())
 				go notifyState()
 			case gauthbox.MqttDisonnected:
 				// Nothing special, just report the state.
@@ -177,7 +181,7 @@ func main() {
 				green <- gauthbox.LedBlink{Interval: time.Millisecond * 500}
 				red <- gauthbox.LedStatic{On: false}
 				setRelay(true)
-				go mqttPublish(badgeDev.Mqtt, state.badgeId)
+				go mqttPublish(badgeDev.Mqtt, state.badgedIn())
 				go notifyState()
 			}
 		case currentIsHigh := <-currentSenseDev.Events:
@@ -239,7 +243,7 @@ func main() {
 					}
 				}(state.badgeId)
 				state.badgeId = ""
-				go mqttPublish(badgeDev.Mqtt, state.badgeId)
+				go mqttPublish(badgeDev.Mqtt, state.badgedIn())
 				go notifyState()
 				maybeSelfReset()
 			}
@@ -248,17 +252,13 @@ func main() {
 }
 
 func (s State) String() string {
-	badge := "n/a"
-	if s.badgeId != "" {
-		badge = s.badgeId
-	}
-	return fmt.Sprintf("state: %s, badged: %s, relay: %s, mqtt: %s",
+	return fmt.Sprintf("state: %s, badged-in: %s, relay: %s, mqtt: %s",
 		map[int]string{
 			STATE_OFF:    "OFF (unauthenticated)",
 			STATE_IDLE:   "IDLE (authenticated)",
 			STATE_IN_USE: "IN USE (authenticated, drawing current)",
 		}[s.state],
-		badge,
+		map[bool]string{false: "no", true: "yes"}[s.badgedIn()],
 		map[bool]string{false: "off", true: "on"}[s.relay],
 		map[bool]string{false: "disconnected", true: "connected"}[s.mqttConnected])
 }
