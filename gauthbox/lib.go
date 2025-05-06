@@ -238,6 +238,7 @@ func BadgeReader(c badgeReaderConfig) (*DeviceRet[string], error) {
 			Icon:       "mdi:badge-account",
 			BaseTopic:  baseTopic,
 			StateTopic: "~/state",
+			StateClass: "measurement", // For long-term retention.
 		}
 	}
 	return &DeviceRet[string]{
@@ -304,6 +305,7 @@ func CurrentSensing(c currentSensingConfig) (*DeviceRet[bool], error) {
 					UnitOfMeasurement: "A",
 					BaseTopic:         baseTopic,
 					StateTopic:        "~/state",
+					StateClass:        "measurement", // For long-term retention.
 				}
 			},
 			Publish: func(isHigh interface{}) (string, interface{}) {
@@ -353,7 +355,8 @@ func Relay(c relayConfig, isOn <-chan bool) (*DeviceRet[bool], error) {
 				Icon:         "mdi:power-socket-ch",
 				BaseTopic:    baseTopic,
 				StateTopic:   "~/state",
-				CommandTopic: "~/set", // Ignored, read-only.
+				CommandTopic: "~/set",       // Ignored, read-only.
+				StateClass:   "measurement", // For long-term retention.
 			}
 		},
 		Publish: func(isOn interface{}) (string, interface{}) {
@@ -381,8 +384,8 @@ func AccessAllowed(isAllowed chan<- bool) (*DeviceRet[bool], error) {
 				CommandTopic: "~/set",
 				PayloadOn:    "ON",
 				PayloadOff:   "OFF",
-				// We want retained values so we can get the value upon boot.
-				Retain: true,
+				Retain:       true,          // We want retained values so we can get the value upon boot.
+				StateClass:   "measurement", // For long-term retention.
 			}
 		},
 		Subscribe: []MqttSub{{
@@ -488,6 +491,7 @@ type HaComponent struct {
 	PayloadOff        string `json:"payload_off,omitempty"`
 	Retain            bool   `json:"retain,omitempty"`
 	StateTopic        string `json:"state_topic,omitempty"`
+	StateClass        string `json:"state_class,omitempty"`
 	Icon              string `json:"icon,omitempty"`
 	UnitOfMeasurement string `json:"unit_of_measurement,omitempty"`
 	ValueTemplate     string `json:"value_template,omitempty"`
