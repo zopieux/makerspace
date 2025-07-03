@@ -238,7 +238,6 @@ func BadgeReader(c badgeReaderConfig) (*DeviceRet[string], error) {
 			Icon:       "mdi:badge-account",
 			BaseTopic:  baseTopic,
 			StateTopic: "~/state",
-			StateClass: "measurement", // For long-term retention.
 		}
 	}
 	return &DeviceRet[string]{
@@ -384,8 +383,7 @@ func AccessAllowed(isAllowed chan<- bool) (*DeviceRet[bool], error) {
 				CommandTopic: "~/set",
 				PayloadOn:    "ON",
 				PayloadOff:   "OFF",
-				Retain:       true,          // We want retained values so we can get the value upon boot.
-				StateClass:   "measurement", // For long-term retention.
+				Retain:       true, // We want retained values so we can get the value upon boot.
 			}
 		},
 		Subscribe: []MqttSub{{
