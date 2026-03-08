@@ -1,0 +1,17 @@
+#!/sbin/openrc-run
+
+name="drop-portal"
+description="Drop Portal Go Server"
+
+command="/usr/bin/drop-portal"
+command_background="yes"
+pidfile="/run/${name}.pid"
+output_logger="logger -t ${name} -p daemon.info"
+error_logger="logger -t ${name} -p daemon.err"
+
+export AP_SSID="@AP_SSID@"
+
+depend() {
+    need net localmount
+    after usb-gadget
+}

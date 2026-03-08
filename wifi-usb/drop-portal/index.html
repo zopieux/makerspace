@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Drop Portal</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f7f9fc;
+            color: #333;
+        }
+        .container {
+            max-width: 600px;
+            margin: 0 auto;
+            background: #fff;
+            padding: 30px;
+            border-radius: 12px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+        }
+        h1 {
+            margin-top: 0;
+            color: #2c3e50;
+        }
+        p.desc {
+            color: #555;
+            line-height: 1.6;
+            margin-bottom: 25px;
+        }
+        .form-group {
+            margin-bottom: 20px;
+        }
+        label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: bold;
+        }
+        input[type="text"] {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid #ccc;
+            border-radius: 6px;
+            box-sizing: border-box;
+            font-size: 16px;
+        }
+        input[type="file"] {
+            display: block;
+            width: 100%;
+            padding: 10px;
+            border: 2px dashed #3498db;
+            border-radius: 6px;
+            background-color: #f0f8ff;
+            cursor: pointer;
+            box-sizing: border-box;
+        }
+        button {
+            background-color: #3498db;
+            color: #fff;
+            border: none;
+            padding: 12px 24px;
+            font-size: 16px;
+            border-radius: 6px;
+            cursor: pointer;
+            width: 100%;
+            transition: background-color 0.3s;
+        }
+        button:hover:not(:disabled) {
+            background-color: #2980b9;
+        }
+        button:disabled {
+            background-color: #bdc3c7;
+            cursor: not-allowed;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>WOODSHOP-CNC ⋅ Drop Portal</h1>
+        <p class="desc">Send your files directly to the OneFinity CNC.
+            Enter your username and select a file to upload. Accepted formats: .nc, .cnc, .tap, .wiz, .txt, .eia.</p>
+        <div id="messageBox" style="display: none; padding: 15px; margin-bottom: 20px; border-radius: 6px; font-weight: bold;">
+        </div>
+        <form action="/upload" method="post" enctype="multipart/form-data" id="uploadForm">
+            <div class="form-group">
+                <label for="username">Username</label>
+                <input type="text" id="username" name="username" required pattern="[a-zA-Z0-9_\-]{1,31}" title="Up to 31 characters: letters, numbers, hyphens, and underscores.">
+            </div>
+            <div class="form-group">
+                <label for="file">File to Transfer</label>
+                <input type="file" id="file" name="file" accept=".nc,.cnc,.tap,.wiz,.txt,.eia" required>
+            </div>
+            <button type="submit" id="submitBtn" disabled>Upload File</button>
+        <div id="adminPanel"
+            style="display: none; margin-top: 20px; padding: 15px; background: #e8f4f8; border-radius: 6px; border: 1px solid #bce8f1;">
+            <h3 style="margin-top: 0; color: #31708f;">Admin Panel</h3>
+            <button id="btnRestart" style="margin-bottom: 10px; background-color: #e74c3c;">Restart Gadget</button>
+            <button id="btnDetach" style="margin-bottom: 10px; background-color: #f39c12;">Detach Only</button>
+            <button id="btnUpdate" style="background-color: #27ae60;">Force Update</button>
+        </div>
+    </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            const usernameInput = document.getElementById('username');
+            const storedUsername = localStorage.getItem('drop_portal_username');
+            if (storedUsername) {
+                usernameInput.value = storedUsername;
+            }
+
+            const form = document.getElementById('uploadForm');
+            const messageBox = document.getElementById('messageBox');
+            const submitBtn = document.getElementById('submitBtn');
+            const fileInput = document.getElementById('file');
+
+            const validateForm = () => {
+                const isValidUsername = /^[a-zA-Z0-9_\-]{1,31}$/.test(usernameInput.value);
+                const isFileSelected = fileInput.files.length > 0;
+                submitBtn.disabled = !(isValidUsername && isFileSelected);
+            };
+
+            usernameInput.addEventListener('input', validateForm);
+            fileInput.addEventListener('change', validateForm);
+
+            // Initial validation call in case username was restored from localStorage.
+            validateForm();
+
+            form.addEventListener('submit', async (e) => {
+                e.preventDefault();
+                messageBox.style.display = 'none';
+                submitBtn.disabled = true;
+                submitBtn.textContent = 'Uploading...';
+
+                localStorage.setItem('drop_portal_username', usernameInput.value);
+
+                try {
+                    const formData = new FormData(form);
+                    const response = await fetch('/upload', {
+                        method: 'POST',
+                        body: formData
+                    });
+
+                    const text = await response.text();
+
+                    if (!response.ok) {
+                        messageBox.style.display = 'block';
+                        messageBox.style.backgroundColor = '#fdeea';
+                        messageBox.style.color = '#c0392b';
+                        messageBox.style.border = '1px solid #e74c3c';
+                        messageBox.textContent = text;
+                    } else {
+                        messageBox.style.display = 'block';
+                        messageBox.style.backgroundColor = '#eafaf1';
+                        messageBox.style.color = '#27ae60';
+                        messageBox.style.border = '1px solid #2ecc71';
+                        messageBox.textContent = text || 'File Uploaded Successfully!';
+                        form.reset();
+                        // Restore username.
+                        usernameInput.value = localStorage.getItem('drop_portal_username');
+                        validateForm();
+                    }
+                } catch (err) {
+                    messageBox.style.display = 'block';
+                    messageBox.style.backgroundColor = '#fdeea';
+                    messageBox.style.color = '#c0392b';
+                    messageBox.style.border = '1px solid #e74c3c';
+                    messageBox.textContent = 'Network Error: ' + err.message;
+                } finally {
+                    submitBtn.textContent = 'Upload File';
+                    validateForm();
+                }
+            });
+
+            // Admin buttons.
+            const konamiCode = ['ArrowLeft', 'ArrowLeft', 'ArrowRight', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'ArrowUp', 'ArrowDown'];
+            let konamiPosition = 0;
+            let lastKeyTime = 0;
+            document.addEventListener('keydown', (e) => {
+                const now = Date.now();
+                if (now - lastKeyTime > 500) {
+                    konamiPosition = 0;
+                }
+                lastKeyTime = now;
+
+                if (e.key === konamiCode[konamiPosition]) {
+                    konamiPosition++;
+                    if (konamiPosition === konamiCode.length) {
+                        document.getElementById('adminPanel').style.display = 'block';
+                        konamiPosition = 0;
+                    }
+                } else {
+                    konamiPosition = 0;
+                }
+            });
+            const doAdminAction = async (endpoint) => {
+                try {
+                    const res = await fetch(endpoint, { method: 'POST' });
+                    const text = await res.text();
+                    alert(text);
+                } catch (err) {
+                    alert("Error: " + err);
+                }
+            };
+            document.getElementById('btnRestart').addEventListener('click', () => doAdminAction('/admin/restart'));
+            document.getElementById('btnDetach').addEventListener('click', () => doAdminAction('/admin/detach'));
+            document.getElementById('btnUpdate').addEventListener('click', () => doAdminAction('/admin/update'));
+        });
+    </script>
+</body>
+</html>

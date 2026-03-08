@@ -1,9 +1,7 @@
 result
-result/
 .direnv/
 .br/
 gauthbox/vendor/
-
 
 *.000
 *bak
@@ -19,3 +17,11 @@ fp-lib-table
 *-backups/
 pcbway_production/
 *.zip
+*.apkovl.tar.gz
+.apk
+.envrc.local
+sdcard.img
+.old
+wifi-usb-storage
+wifi-usb/id_pizero
+out
