@@ -1,0 +1,75 @@
+FROM --platform=linux/arm64 alpine:3.21 AS base
+RUN apk add --no-cache alpine-base
+
+# initramfs
+FROM base AS initramfs
+RUN apk add --no-cache zstd linux-rpi wireless-regdb linux-firmware-brcm mkinitfs iproute2 iw wpa_supplicant
+COPY --chown=0:0 ./initramfs/ /
+RUN printf '/sbin/wpa_supplicant\n/sbin/wpa_cli\n/etc/wpa_supplicant/wpa_supplicant.conf\n' \
+    > /etc/mkinitfs/features.d/wpa_supplicant.files
+RUN printf \
+    'kernel/net/wireless/lib80211.ko.xz\nkernel/net/wireless/cfg80211.ko.xz\nkernel/net/mac80211/mac80211.ko.xz\nkernel/drivers/net/wireless/broadcom/brcm80211/brcmutil/brcmutil.ko.xz\nkernel/drivers/net/wireless/broadcom/brcm80211/brcmfmac/brcmfmac.ko.xz\nkernel/drivers/net/wireless/broadcom/brcm80211/brcmfmac/cyw/brcmfmac-cyw.ko.xz\nkernel/drivers/net/wireless/broadcom/brcm80211/brcmfmac/wcc/brcmfmac-wcc.ko.xz\n' \
+    > /etc/mkinitfs/features.d/wifi.modules
+RUN printf \
+    '/lib/firmware/brcm/brcmfmac43430b0-sdio.raspberrypi,model-zero-2-w.bin\n/lib/firmware/brcm/brcmfmac43430b0-sdio.raspberrypi,model-zero-2-w.clm_blob\n/lib/firmware/brcm/brcmfmac43430b0-sdio.raspberrypi,model-zero-2-w.txt\nlib/firmware/brcm/brcmfmac43436-sdio.raspberrypi,model-zero-2-w.bin\n/lib/firmware/brcm/brcmfmac43436-sdio.raspberrypi,model-zero-2-w.clm_blob\n/lib/firmware/brcm/brcmfmac43436-sdio.raspberrypi,model-zero-2-w.txt\n/lib/firmware/brcm/brcmfmac43436s-sdio.raspberrypi,model-zero-2-w.bin\n/lib/firmware/brcm/brcmfmac43436s-sdio.raspberrypi,model-zero-2-w.txt\n/lib/firmware/brcm/BCM43430A1.raspberrypi,model-zero-2-w.hcd\n/lib/firmware/brcm/BCM43430B0.raspberrypi,model-zero-2-w.hcd\n/lib/firmware/brcm/brcmfmac43430-sdio.bin\n/lib/firmware/brcm/brcmfmac43430-sdio.clm_blob\n/lib/firmware/brcm/brcmfmac43430-sdio.txt\n/lib/firmware/regulatory.db\n/lib/firmware/regulatory.db.p7s\n' \
+    > /etc/mkinitfs/features.d/wifi.files
+RUN find /lib/firmware/brcm -name '*.zst' | while read f; do \
+        real="$(readlink -f "$f")"; \
+        out="${f%.zst}"; \
+        zstd -df "$real" -o "$out"; \
+    done && \
+    cp /lib/firmware/brcm/brcmfmac43430-sdio.bin \
+       /lib/firmware/brcm/brcmfmac43430-sdio.raspberrypi,model-zero-2-w.bin && \
+    cp /lib/firmware/brcm/brcmfmac43430-sdio.clm_blob \
+       /lib/firmware/brcm/brcmfmac43430-sdio.raspberrypi,model-zero-2-w.clm_blob && \
+    cp /lib/firmware/brcm/brcmfmac43430-sdio.txt \
+       /lib/firmware/brcm/brcmfmac43430-sdio.raspberrypi,model-zero-2-w.txt
+RUN mkinitfs \
+    -F "$(cat /etc/mkinitfs/mkinitfs.conf | grep features | cut -d'"' -f2) network dhcp wifi mmc wpa_supplicant" \
+    -o /initramfs-rpi \
+    $(ls /lib/modules)
+# Unpack, patch, repack
+COPY ./patch-init.awk /tmp/patch-init.awk
+RUN mkdir /tmp/initramfs-work && \
+    cd /tmp/initramfs-work && \
+    zcat /initramfs-rpi | cpio -id && \
+    awk -f /tmp/patch-init.awk init > init.patched && \
+    mv init.patched init && \
+    chmod +x init && \
+    mkdir -p lib/firmware/brcm var/run && \
+    cp /lib/firmware/brcm/brcmfmac43430-sdio.raspberrypi,model-zero-2-w.bin  lib/firmware/brcm/ && \
+    cp /lib/firmware/brcm/brcmfmac43430-sdio.raspberrypi,model-zero-2-w.clm_blob lib/firmware/brcm/ && \
+    cp /lib/firmware/brcm/brcmfmac43430-sdio.raspberrypi,model-zero-2-w.txt  lib/firmware/brcm/ && \
+    cp /lib/firmware/brcm/brcmfmac43430-sdio.txt lib/firmware/brcm/ && \
+    find . | cpio -o -H newc | gzip -9 > /initramfs-rpi
+
+# apkovl= .tar.gz (newroot)
+FROM base AS apkovl
+RUN apk add --no-cache \
+    alpine-base cdrkit lighttpd dnsmasq haveged hostapd \
+    mtools nbd-client openssh wpa_supplicant iproute2 iw chrony
+
+COPY --chown=0:0 ./apkovl/ /
+
+RUN rc-update add wpa_supplicant default && \
+    rc-update add sshd default && \
+    rc-update add lighttpd default && \
+    rc-update add chronyd default && \
+    rc-update add dnsmasq default && \
+    rc-update add hostapd default && \
+    rc-update add haveged boot && \
+    echo 'root:root' | chpasswd && \
+    echo 'woodshop-cnc-usb' > /etc/hostname && \
+    echo "Europe/Zurich" > /etc/timezone && \
+    echo "" > /etc/apk/repositories && \
+    echo "" > /etc/apk/world && \
+    rm -rf /var && mkdir -p /var/{tmp,run,lib/{misc,chrony},log/chrony}
+
+RUN tar czf /cnc-usb.apkovl.tar.gz -C / --exclude=/lib/modules \
+    etc usr bin sbin lib run root var
+
+# For --output
+FROM scratch
+COPY --from=initramfs /initramfs-rpi /initramfs-rpi
+COPY --from=initramfs /boot/vmlinuz-rpi /vmlinuz-rpi
+COPY --from=apkovl /cnc-usb.apkovl.tar.gz /cnc-usb.apkovl.tar.gz

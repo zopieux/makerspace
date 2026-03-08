@@ -1,0 +1,17 @@
+auto lo
+iface lo inet loopback
+
+auto wlan0
+iface wlan0 inet dhcp
+    wpa-conf /etc/wpa_supplicant/wpa_supplicant.conf
+
+# The Access Point interface
+auto uap0
+iface uap0 inet static
+    address @AP_GATEWAY@
+    netmask 255.255.255.0
+    # Create the virtual interface before bringing it up
+    pre-up iw dev wlan0 interface add uap0 type __ap || true
+    pre-up ip link set uap0 up
+    post-down ip link set uap0 down
+    post-down iw dev uap0 del || true

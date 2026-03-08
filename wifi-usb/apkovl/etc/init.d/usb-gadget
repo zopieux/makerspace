@@ -1,0 +1,80 @@
+#!/sbin/openrc-run
+
+name="usb-gadget"
+description="Setup USB composite gadget (Mass Storage)"
+
+GADGET=/sys/kernel/config/usb_gadget/g1
+TESTDIR=/tmp/testusb
+MTP_CONF=/etc/umtprd/umtprd.conf
+
+depend() {
+    need localmount
+    need networking
+    after bootmisc
+}
+
+start() {
+    ebegin "Setting up USB Gadget"
+
+    modprobe dwc2 2>/dev/null || true
+    modprobe libcomposite 2>/dev/null || true
+    mount -t configfs none /sys/kernel/config 2>/dev/null || true
+
+    # Wait for UDC
+    local i=0
+    while [ -z "$(ls /sys/class/udc 2>/dev/null)" ] && [ $i -lt 20 ]; do
+        sleep 0.25; i=$((i + 1))
+    done
+    [ -z "$(ls /sys/class/udc 2>/dev/null)" ] && die "No UDC found"
+
+    mkdir -p "$GADGET"
+    cd "$GADGET"
+    echo 0x1d6b > idVendor
+    echo 0x0104 > idProduct
+    echo 0x0100 > bcdDevice
+    echo 0x0200 > bcdUSB
+    echo 0xEF   > bDeviceClass
+    echo 0x02   > bDeviceSubClass
+    echo 0x01   > bDeviceProtocol
+    mkdir -p strings/0x409
+    echo "0123456789"  > strings/0x409/serialnumber
+    echo "TestUSB"     > strings/0x409/manufacturer
+    echo "PiZero2"     > strings/0x409/product
+    mkdir -p configs/c.1/strings/0x409
+    echo "Test Config" > configs/c.1/strings/0x409/configuration
+    echo 250           > configs/c.1/MaxPower
+
+    mkdir -p functions/mass_storage.usb0
+    echo 1 > functions/mass_storage.usb0/stall
+    echo 1 > functions/mass_storage.usb0/lun.0/removable
+    echo 1 > functions/mass_storage.usb0/lun.0/ro
+    ln -sf functions/mass_storage.usb0 configs/c.1/
+    ls /sys/class/udc > "$GADGET/UDC"
+    echo "Gadget bound to $(cat "$GADGET/UDC")"
+    echo 1 > functions/mass_storage.usb0/lun.0/forced_eject || true
+    eend 0
+}
+
+stop() {
+    ebegin "Stopping USB Gadget"
+    # Unbind UDC
+    echo "" > "$GADGET/UDC" 2>/dev/null || true
+    # Remove function links from config
+    for l in "$GADGET"/configs/c.1/*; do
+        [ -L "$l" ] && rm -f "$l"
+    done
+    # Remove functions
+    for d in "$GADGET"/functions/*; do
+        [ -d "$d" ] && rmdir "$d" 2>/dev/null || true
+    done
+    # Remove config strings, config
+    rmdir "$GADGET"/configs/c.1/strings/0x409 2>/dev/null || true
+    rmdir "$GADGET"/configs/c.1 2>/dev/null || true
+    rmdir "$GADGET"/strings/0x409 2>/dev/null || true
+    rmdir "$GADGET" 2>/dev/null || true
+    # Kill any running umtprd
+    killall umtprd 2>/dev/null || true
+    # Unmount ffs
+    umount /dev/ffs-mtp 2>/dev/null || true
+    eend 0
+}
