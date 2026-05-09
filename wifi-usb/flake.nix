@@ -2,64 +2,79 @@
   description = "Alpine Raspberry Pi Zero 2 USB Gadget Image";
 
   inputs = {
-    nixpkgs.url = "github:nixos/nixpkgs?ref=54caed8f89e27a841ec890b7663f9a53b0e4e25c";
+    nixpkgs.url = "github:nixos/nixpkgs?ref=nixos-unstable";
   };
 
   outputs = { self, nixpkgs }@inputs:
     let
-      system = "x86_64-linux";
-      pkgs = nixpkgs.legacyPackages.${system};
+      supportedSystems = [ "x86_64-linux" "aarch64-linux" ];
+      forAllSystems = nixpkgs.lib.genAttrs supportedSystems;
+      nixpkgsFor = forAllSystems (system: import nixpkgs { inherit system; });
     in
     {
-      packages.${system} = {
-        umtprd = pkgs.pkgsCross.aarch64-multiplatform-musl.stdenv.mkDerivation {
-          pname = "umtprd";
-          version = "1.8.1";
-
-          src = pkgs.fetchFromGitHub {
-            owner = "viveris";
-            repo = "uMTP-Responder";
-            rev = "umtprd-1.8.1";
-            hash = "sha256-kZXuEgyxNHKbuZjoMpOVjt6ygiar73/C1FsF942pjFM=";
+      packages = forAllSystems (system:
+        let
+          pkgs = nixpkgsFor.${system};
+        in
+        {
+          umtprd = pkgs.pkgsCross.aarch64-multiplatform-musl.stdenv.mkDerivation {
+            pname = "umtprd";
+            version = "1.8.1";
+            src = pkgs.fetchFromGitHub {
+              owner = "viveris";
+              repo = "uMTP-Responder";
+              rev = "umtprd-1.8.1";
+              hash = "sha256-kZXuEgyxNHKbuZjoMpOVjt6ygiar73/C1FsF942pjFM=";
+            };
+            makeFlags = [
+              "CC=${pkgs.pkgsCross.aarch64-multiplatform-musl.stdenv.cc.targetPrefix}gcc"
+              "LDFLAGS=-static -lpthread -lrt"
+            ];
+            installPhase = ''
+              install -Dm755 umtprd $out/bin/umtprd
+            '';
           };
 
-          makeFlags = [
-            "CC=${pkgs.pkgsCross.aarch64-multiplatform-musl.stdenv.cc.targetPrefix}gcc"
-            "LDFLAGS=-static -lpthread -lrt"
-          ];
+          usb-gadget = pkgs.pkgsCross.aarch64-multiplatform-musl.buildGoModule {
+            pname = "usb-gadget";
+            version = "0.0.1";
+            src = ./usb-gadget;
+            vendorHash = "sha256-Db09ftEG9DJgN6mb4LaA2cOGiOjQx36DzeDqzAik2Fs=";
+            subPackages = [ "cmd/gadget-web" "cmd/gadget-ha-rclone" ];
+            env = { CGO_ENABLED = "0"; };
+            ldflags = [ "-s" "-w" "-extldflags '-static'" ];
+          };
+        }
+      );
 
-          installPhase = ''
-            install -Dm755 umtprd $out/bin/umtprd
-          '';
-        };
+      defaultPackage = forAllSystems (system: self.packages.${system}.usb-gadget);
 
-        drop-portal = pkgs.pkgsCross.aarch64-multiplatform-musl.buildGoModule {
-          pname = "drop-portal";
-          version = "0.0.1";
-          src = ./drop-portal;
-          vendorHash = null;
-          env = { CGO_ENABLED = "0"; };
-          ldflags = [ "-s" "-w" "-extldflags '-static'" ];
-        };
-      };
+      devShells = forAllSystems (system:
+        let
+          pkgs = nixpkgsFor.${system};
+        in
+        {
+          default = pkgs.mkShell {
+            UMTPRD_PATH = "${self.packages.${system}.umtprd}/bin/umtprd";
+            USB_GADGET_PATH = "${self.packages.${system}.usb-gadget}/bin/gadget-web";
 
-      devShells.${system}.default = pkgs.mkShell {
-        UMTPRD_PATH = "${self.packages.${system}.umtprd}/bin/umtprd";
-        DROP_PORTAL_PATH = "${self.packages.${system}.drop-portal}/bin/drop-portal";
-
-        buildInputs = with pkgs; [
-          apk-tools
-          nix-prefetch-scripts
-          jq
-          wget
-          mtools
-          dosfstools
-          parted
-          openssl
-          cpio
-          gzip
-          dtc
-        ];
-      };
+            buildInputs = with pkgs; [
+              apk-tools
+              nix-prefetch-scripts
+              jq
+              wget
+              mtools
+              dosfstools
+              parted
+              openssl
+              cpio
+              gzip
+              dtc
+              go
+              gopls
+            ];
+          };
+        }
+      );
     };
 }

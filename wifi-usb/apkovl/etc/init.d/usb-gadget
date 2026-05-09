@@ -47,10 +47,10 @@ start() {
     mkdir -p functions/mass_storage.usb0
     echo 1 > functions/mass_storage.usb0/stall
     echo 1 > functions/mass_storage.usb0/lun.0/removable
-    echo "WOODZRH DropPortal      1.0 " > functions/mass_storage.usb0/lun.0/inquiry_string
+    echo "WOODZRH GadgetPortal    1.0 " > functions/mass_storage.usb0/lun.0/inquiry_string
     echo 1 > functions/mass_storage.usb0/lun.0/ro
     ln -sf functions/mass_storage.usb0 configs/c.1/
-    # UDC binding handled by drop-portal once image is ready
+    # UDC binding handled by the gadget portal logic once image is ready
     eend 0
 }
 

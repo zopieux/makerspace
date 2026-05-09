@@ -1,9 +1,9 @@
 #!/sbin/openrc-run
 
-name="drop-portal"
-description="Drop Portal Go Server"
+name="gadget-web"
+description="USB Gadget Web Portal"
 
-command="/usr/bin/drop-portal"
+command="/usr/bin/gadget-web"
 command_background="yes"
 pidfile="/run/${name}.pid"
 output_logger="logger -t ${name} -p daemon.info"

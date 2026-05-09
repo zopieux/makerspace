@@ -1,8 +1,27 @@
-FROM --platform=linux/arm64 docker.io/library/alpine:3.21 AS base
+ARG ALPINE_VERSION
+
+FROM --platform=linux/arm64 docker.io/library/alpine:$ALPINE_VERSION AS base
 RUN apk add --no-cache alpine-base
 
 FROM base AS initramfs
 RUN apk add --no-cache zstd linux-rpi wireless-regdb linux-firmware-brcm mkinitfs iproute2 iw wpa_supplicant
+RUN rm -rf /lib/modules/*/kernel/sound \
+           /lib/modules/*/kernel/drivers/gpu \
+           /lib/modules/*/kernel/drivers/video \
+           /lib/modules/*/kernel/drivers/media \
+           /lib/modules/*/kernel/drivers/iio \
+           /lib/modules/*/kernel/drivers/bluetooth \
+           /lib/modules/*/kernel/net/bluetooth \
+           /lib/modules/*/kernel/drivers/input/touchscreen \
+           /lib/modules/*/kernel/drivers/net/ethernet \
+           /lib/modules/*/kernel/drivers/net/can \
+           /lib/modules/*/kernel/drivers/net/wireless/intel \
+           /lib/modules/*/kernel/drivers/net/wireless/realtek \
+           /lib/modules/*/kernel/drivers/net/wireless/mediatek \
+           /lib/modules/*/kernel/drivers/net/wireless/ralink \
+           /lib/modules/*/kernel/drivers/net/wireless/ath \
+           /lib/modules/*/kernel/drivers/net/wireless/marvell && \
+    depmod -b / -a $(ls /lib/modules)
 COPY --chown=0:0 ./.tmp/initramfs/ /
 RUN printf '/sbin/wpa_supplicant\n/sbin/wpa_cli\n/etc/wpa_supplicant/wpa_supplicant.conf\n' \
     > /etc/mkinitfs/features.d/wpa_supplicant.files
@@ -45,3 +64,4 @@ RUN mkdir /tmp/initramfs-work && \
 FROM scratch
 COPY --from=initramfs /initramfs-rpi /initramfs-rpi
 COPY --from=initramfs /boot/vmlinuz-rpi /vmlinuz-rpi
+COPY --from=initramfs /lib/modules /lib/modules

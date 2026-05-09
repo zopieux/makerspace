@@ -1,12 +1,15 @@
-FROM --platform=linux/arm64 docker.io/library/alpine:3.21 AS base
+ARG ALPINE_VERSION
+
+FROM --platform=linux/arm64 docker.io/library/alpine:$ALPINE_VERSION AS base
 RUN apk add --no-cache alpine-base
 
 # apkovl= .tar.gz (newroot)
 FROM base AS apkovl
 RUN apk add --no-cache \
-    alpine-base linux-rpi cdrkit dnsmasq haveged hostapd rsync \
+    alpine-base cdrkit dnsmasq haveged hostapd rsync rclone \
     dosfstools util-linux nbd-client openssh wpa_supplicant iproute2 iw chrony
 
+COPY .tmp/lib/modules /lib/modules
 COPY --chown=0:0 ./.tmp/apkovl/ /
 
 RUN du -sh /lib/modules
@@ -16,7 +19,8 @@ RUN rc-update add wpa_supplicant default && \
     rc-update add dnsmasq default && \
     rc-update add hostapd default && \
     rc-update add usb-gadget default && \
-    rc-update add drop-portal default && \
+    rc-update add gadget-web default && \
+    rc-update add gadget-ha-rclone default && \
     rc-update add modules boot && \
     rc-update add sysctl boot && \
     rc-update add bootmisc boot && \
@@ -24,7 +28,7 @@ RUN rc-update add wpa_supplicant default && \
     rc-update add haveged boot && \
     rc-update add hwdrivers sysinit && \
     echo 'root:root' | chpasswd && \
-    echo 'woodshop-cnc-usb' > /etc/hostname && \
+    echo 'dropportal' > /etc/hostname && \
     echo "Europe/Zurich" > /etc/timezone && \
     echo "" > /etc/apk/repositories && \
     echo "" > /etc/apk/world && \
@@ -32,9 +36,9 @@ RUN rc-update add wpa_supplicant default && \
     mkdir -p /var/tmp /var/run /var/lib/misc /var/lib/chrony /var/log/chrony /var/run/chrony && \
     chown chrony:chrony /var/lib/chrony /var/log/chrony /var/run/chrony
 
-RUN tar czf /cnc-usb.apkovl.tar.gz -C / \
+RUN tar czf /dropportal.apkovl.tar.gz -C / \
     etc usr bin sbin lib run root var 
 
 # For --output
 FROM scratch
-COPY --from=apkovl /cnc-usb.apkovl.tar.gz /cnc-usb.apkovl.tar.gz
+COPY --from=apkovl /dropportal.apkovl.tar.gz /dropportal.apkovl.tar.gz

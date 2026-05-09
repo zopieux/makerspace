@@ -8,25 +8,21 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
+
+	"usb-gadget/usb_gadget"
 )
 
 //go:embed index.html
 var content embed.FS
 
-var (
-	validExts = []string{".nc", ".cnc", ".tap", ".wiz", ".txt", ".eia"}
-)
 
 const (
-	portalDir = "/dev/shm/drop-portal"
-	imgFile   = "/dev/shm/drop-portal.img"
-	gadgetDir = "/sys/kernel/config/usb_gadget/g1"
-	lunDir    = gadgetDir + "/functions/mass_storage.usb0/lun.0"
+	portalDir = "/dev/shm/usb-gadget"
+	imgFile   = "/dev/shm/usb-gadget.img"
 )
 
 func sanitizeUsername(u string) string {
@@ -46,66 +42,6 @@ func sanitizeFilename(f string) string {
 	return s
 }
 
-func updateGadget() {
-	log.Println("Updating USB gadget image...")
-
-	// 1. Unbind UDC
-	udcCmd := exec.Command("sh", "-c", "ls /sys/class/udc | head -n 1")
-	out, _ := udcCmd.Output()
-	udc := strings.TrimSpace(string(out))
-
-	detachGadget()
-
-	img := imgFile
-	exec.Command("sh", "-c", fmt.Sprintf("losetup -j %s | cut -d: -f1 | xargs -r losetup -d", img)).Run()
-
-	// 3. Fallocate
-	cmd := exec.Command("fallocate", "-l", "128M", img)
-	if outF, err := cmd.CombinedOutput(); err != nil {
-		log.Printf("fallocate failed: %v, out: %s", err, string(outF))
-	}
-
-	// 4. FAT32
-	cmd = exec.Command("mkfs.vfat", "-F32", "-n", "DROPPORTAL", img)
-	if outF, err := cmd.CombinedOutput(); err != nil {
-		log.Printf("mkfs.vfat failed: %v, out: %s", err, string(outF))
-	}
-
-	// 5. Mount and Rsync
-	tmpDir, err := os.MkdirTemp("/dev/shm", "drop_portal_mnt_*")
-	if err == nil {
-		defer os.Remove(tmpDir)
-		cmd = exec.Command("mount", "-o", "loop", img, tmpDir)
-		if outM, errM := cmd.CombinedOutput(); errM == nil {
-			cmd = exec.Command("rsync", "-rltD", "--delete", "--no-owner", "--no-group", portalDir+"/", tmpDir+"/")
-			if outR, errR := cmd.CombinedOutput(); errR != nil {
-				log.Printf("rsync failed: %v, out: %s", errR, string(outR))
-			}
-			exec.Command("sync").Run()
-			exec.Command("umount", tmpDir).Run()
-		} else {
-			log.Printf("mount failed: %v, out: %s", errM, string(outM))
-		}
-	} else {
-		log.Printf("Failed to create temp dir for mounting: %v", err)
-	}
-	
-	err = os.WriteFile(filepath.Join(lunDir, "file"), []byte(img+"\n"), 0644)
-	if err != nil {
-		log.Printf("Failed to bind image to gadget: %v", err)
-	} else {
-		log.Println("Gadget image updated successfully.")
-	}
-
-	if udc != "" {
-		err = os.WriteFile(gadgetDir+"/UDC", []byte(udc+"\n"), 0644)
-		if err != nil {
-			log.Printf("Failed to bind UDC: %v", err)
-		} else {
-			log.Printf("Gadget bound to %s", udc)
-		}
-	}
-}
 
 func cleanupLoop() {
 	for {
@@ -174,7 +110,7 @@ func handleUpload(w http.ResponseWriter, r *http.Request) {
 	ext := strings.ToLower(filepath.Ext(fname))
 
 	validExt := false
-	for _, e := range validExts {
+	for _, e := range usb_gadget.ValidExts {
 		if ext == e {
 			validExt = true
 			break
@@ -206,19 +142,12 @@ func handleUpload(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("Successfully saved file %s for user %s", destPath, uname)
 
-	go updateGadget()
+	go usb_gadget.Update(portalDir, imgFile)
 
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte("File uploaded successfully!"))
 }
 
-func detachGadget() {
-	if err := os.WriteFile(gadgetDir+"/UDC", []byte("\n"), 0644); err != nil {
-		log.Printf("Failed to detach UDC (if unbound, this is expected): %v", err)
-	} else {
-		log.Println("Gadget detached.")
-	}
-}
 
 func handleAdminRestart(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -226,9 +155,8 @@ func handleAdminRestart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	log.Println("Admin: Restarting Gadget Service")
-	cmd := exec.Command("/etc/init.d/usb-gadget", "restart")
-	if out, err := cmd.CombinedOutput(); err != nil {
-		log.Printf("Restart failed: %v, out: %s", err, string(out))
+	if err := usb_gadget.RestartService(); err != nil {
+		log.Printf("Restart failed: %v", err)
 		http.Error(w, "Restart failed", http.StatusInternalServerError)
 		return
 	}
@@ -242,7 +170,7 @@ func handleAdminDetach(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	log.Println("Admin: Detaching Gadget")
-	detachGadget()
+	usb_gadget.Detach()
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte("Gadget Detached!"))
 }
@@ -253,7 +181,7 @@ func handleAdminUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	log.Println("Admin: Forcing Update")
-	go updateGadget()
+	go usb_gadget.Update(portalDir, imgFile)
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte("Gadget Update Started!"))
 }
@@ -270,7 +198,7 @@ func main() {
 		}
 	}
 
-	go updateGadget()
+	go usb_gadget.Update(portalDir, imgFile)
 
 	go cleanupLoop()
 
