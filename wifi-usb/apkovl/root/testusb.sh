@@ -1,11 +1,10 @@
 #!/bin/sh
 # testusb — test different USB device presentation methods
-# Usage: testusb <usb|cdrom|mtp>
+# Usage: testusb <usb|cdrom>
 set -eu
 
 GADGET=/sys/kernel/config/usb_gadget/g1
 TESTDIR=/tmp/testusb
-MTP_CONF=/etc/umtprd/umtprd.conf
 
 die() { echo "ERROR: $*" >&2; exit 1; }
 
@@ -27,10 +26,6 @@ gadget_teardown() {
     rmdir "$GADGET"/configs/c.1 2>/dev/null || true
     rmdir "$GADGET"/strings/0x409 2>/dev/null || true
     rmdir "$GADGET" 2>/dev/null || true
-    # Kill any running umtprd
-    killall umtprd 2>/dev/null || true
-    # Unmount ffs
-    umount /dev/ffs-mtp 2>/dev/null || true
 }
 
 gadget_base() {
@@ -147,83 +142,6 @@ mode_cdrom() {
     while true; do sleep 60; done
 }
 
-mode_mtp() {
-    echo "=== MTP (Media Transfer Protocol) ==="
-    prepare_test_files
-
-    modprobe dwc2 2>/dev/null || true
-    modprobe libcomposite 2>/dev/null || true
-    mount -t configfs none /sys/kernel/config 2>/dev/null || true
-
-    # Wait for UDC
-    local i=0
-    while [ -z "$(ls /sys/class/udc 2>/dev/null)" ] && [ $i -lt 20 ]; do
-        sleep 0.25; i=$((i + 1))
-    done
-    [ -z "$(ls /sys/class/udc 2>/dev/null)" ] && die "No UDC found"
-
-    mkdir -p "$GADGET"
-    cd "$GADGET"
-    echo 0x1d6b > idVendor
-    echo 0x0100 > idProduct   # PTP Gadget
-    echo 0x0100 > bcdDevice
-    echo 0x0200 > bcdUSB
-    echo 0x06   > bDeviceClass     # Image
-    echo 0x01   > bDeviceSubClass  # Still Imaging
-    echo 0x01   > bDeviceProtocol
-    mkdir -p strings/0x409
-    echo "0123456789"  > strings/0x409/serialnumber
-    echo "TestUSB"     > strings/0x409/manufacturer
-    echo "PiZero2"     > strings/0x409/product
-    mkdir -p configs/c.1/strings/0x409
-    echo "MTP"  > configs/c.1/strings/0x409/configuration
-    echo 250     > configs/c.1/MaxPower
-
-    # Create FunctionFS instance for MTP
-    mkdir -p functions/ffs.mtp
-    ln -sf functions/ffs.mtp configs/c.1/
-
-    # Mount FunctionFS
-    mkdir -p /dev/ffs-mtp
-    mount -t functionfs mtp /dev/ffs-mtp
-
-    # Write umtprd config
-    mkdir -p "$(dirname "$MTP_CONF")"
-    cat > "$MTP_CONF" <<EOF
-loop_on_disconnect 1
-storage "$TESTDIR" "Test Files" "ro"
-manufacturer "TestUSB"
-product "PiZero2 MTP"
-serial "0123456789"
-firmware_version "1.0"
-mtp_extensions "microsoft.com: 1.0; android.com: 1.0;"
-interface "MTP"
-usb_vendor_id  0x1D6B
-usb_product_id 0x0100
-usb_class 0x6
-usb_subclass 0x1
-usb_protocol 0x1
-usb_dev_version 0x3008
-usb_functionfs_mode 0x1
-usb_dev_path   "/dev/ffs-mtp/ep0"
-usb_epin_path  "/dev/ffs-mtp/ep1"
-usb_epout_path "/dev/ffs-mtp/ep2"
-usb_epint_path "/dev/ffs-mtp/ep3"
-usb_max_packet_size 0x200
-EOF
-
-    # Start umtprd in background — it will write USB descriptors to ep0
-    umtprd -conf "$MTP_CONF" &
-    sleep 1
-
-    # Now bind to UDC (must happen AFTER umtprd has written descriptors)
-    ls /sys/class/udc > "$GADGET/UDC"
-    echo "Gadget bound to $(cat "$GADGET/UDC")"
-
-    echo "MTP active. Files in $TESTDIR are visible via MTP."
-    echo "Ctrl+C to stop."
-    trap gadget_teardown INT TERM
-    wait
 }
 
 # ── main ─────────────────────────────────────────────────────────────────────
@@ -231,6 +149,5 @@ EOF
 case "${1:-}" in
     usb)   gadget_teardown; mode_usb   ;;
     cdrom) gadget_teardown; mode_cdrom ;;
-    mtp)   gadget_teardown; mode_mtp   ;;
-    *)     echo "Usage: testusb <usb|cdrom|mtp>" >&2; exit 1 ;;
+    *)     echo "Usage: testusb <usb|cdrom>" >&2; exit 1 ;;
 esac

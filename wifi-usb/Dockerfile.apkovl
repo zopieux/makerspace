@@ -6,20 +6,26 @@ RUN apk add --no-cache alpine-base
 # apkovl= .tar.gz (newroot)
 FROM base AS apkovl
 RUN apk add --no-cache \
-    alpine-base cdrkit dnsmasq haveged hostapd rsync rclone \
-    dosfstools util-linux nbd-client openssh wpa_supplicant iproute2 iw chrony
+    alpine-base dnsmasq haveged hostapd rclone \
+    dosfstools util-linux openssh wpa_supplicant iproute2 iw chrony
 
 COPY .tmp/lib/modules /lib/modules
 COPY --chown=0:0 ./.tmp/apkovl/ /
+COPY dwc2-host.dts dwc2-peripheral.dts /tmp/
 
+RUN apk add --no-cache --virtual .build-deps dtc && \
+    dtc -I dts -O dtb -o /etc/dwc2-host.dtbo /tmp/dwc2-host.dts 2>/dev/null && \
+    dtc -I dts -O dtb -o /etc/dwc2-peripheral.dtbo /tmp/dwc2-peripheral.dts 2>/dev/null && \
+    # Remove large unnecessary files
+    rm -rf /usr/share/misc/magic.mgc /sbin/eapol_test /etc/ssh/moduli && \
+    apk del .build-deps && \
+    rm /tmp/dwc2-host.dts /tmp/dwc2-peripheral.dts
 RUN du -sh /lib/modules
 RUN rc-update add wpa_supplicant default && \
     rc-update add sshd default && \
     rc-update add chronyd default && \
     rc-update add dnsmasq default && \
     rc-update add hostapd default && \
-    rc-update add usb-gadget default && \
-    rc-update add gadget-web default && \
     rc-update add gadget-ha-rclone default && \
     rc-update add modules boot && \
     rc-update add sysctl boot && \
@@ -32,6 +38,7 @@ RUN rc-update add wpa_supplicant default && \
     echo "Europe/Zurich" > /etc/timezone && \
     echo "" > /etc/apk/repositories && \
     echo "" > /etc/apk/world && \
+    echo "configfs /sys/kernel/config configfs defaults 0 0" >> /etc/fstab && \
     rm -rf /var && \
     mkdir -p /var/tmp /var/run /var/lib/misc /var/lib/chrony /var/log/chrony /var/run/chrony && \
     chown chrony:chrony /var/lib/chrony /var/log/chrony /var/run/chrony

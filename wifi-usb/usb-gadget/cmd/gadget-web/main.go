@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"usb-gadget/usb_gadget"
+	"usb-gadget/usb"
 )
 
 //go:embed index.html
@@ -110,7 +110,7 @@ func handleUpload(w http.ResponseWriter, r *http.Request) {
 	ext := strings.ToLower(filepath.Ext(fname))
 
 	validExt := false
-	for _, e := range usb_gadget.ValidExts {
+	for _, e := range usb.ValidExts {
 		if ext == e {
 			validExt = true
 			break
@@ -142,7 +142,7 @@ func handleUpload(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("Successfully saved file %s for user %s", destPath, uname)
 
-	go usb_gadget.Update(portalDir, imgFile)
+	go usb.LosetupUpdate(portalDir, imgFile)
 
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte("File uploaded successfully!"))
@@ -155,7 +155,7 @@ func handleAdminRestart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	log.Println("Admin: Restarting Gadget Service")
-	if err := usb_gadget.RestartService(); err != nil {
+	if err := usb.RestartService(); err != nil {
 		log.Printf("Restart failed: %v", err)
 		http.Error(w, "Restart failed", http.StatusInternalServerError)
 		return
@@ -170,7 +170,7 @@ func handleAdminDetach(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	log.Println("Admin: Detaching Gadget")
-	usb_gadget.Detach()
+	usb.Detach()
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte("Gadget Detached!"))
 }
@@ -181,7 +181,7 @@ func handleAdminUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	log.Println("Admin: Forcing Update")
-	go usb_gadget.Update(portalDir, imgFile)
+	go usb.LosetupUpdate(portalDir, imgFile)
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte("Gadget Update Started!"))
 }
@@ -198,7 +198,7 @@ func main() {
 		}
 	}
 
-	go usb_gadget.Update(portalDir, imgFile)
+	go usb.LosetupUpdate(portalDir, imgFile)
 
 	go cleanupLoop()
 

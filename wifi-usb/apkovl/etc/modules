@@ -1,7 +1,7 @@
-dwc2
-nbd
-libcomposite
-smsc95xx
-usbnet
 cdc_ether
+dwc2
+libcomposite
 rndis_host
+smsc95xx
+ublk_drv
+usbnet

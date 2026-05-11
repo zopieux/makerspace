@@ -1,10 +1,18 @@
 ARG ALPINE_VERSION
+ARG BOOT_MODE=""
 
 FROM --platform=linux/arm64 docker.io/library/alpine:$ALPINE_VERSION AS base
 RUN apk add --no-cache alpine-base
 
 FROM base AS initramfs
-RUN apk add --no-cache zstd linux-rpi wireless-regdb linux-firmware-brcm mkinitfs iproute2 iw wpa_supplicant
+RUN apk add --no-cache zstd linux-rpi wireless-regdb linux-firmware-brcm mkinitfs iproute2 iw wpa_supplicant build-base linux-rpi-dev && \
+    cd /tmp && \
+    wget https://raw.githubusercontent.com/raspberrypi/linux/rpi-6.12.y/drivers/block/ublk_drv.c && \
+    echo "obj-m += ublk_drv.o" > Makefile && \
+    make -C /lib/modules/*/build M=$(pwd) modules && \
+    mkdir -p /lib/modules/$(ls /lib/modules | grep -v extramodules | head -n1)/kernel/drivers/block && \
+    cp ublk_drv.ko /lib/modules/$(ls /lib/modules | grep -v extramodules | head -n1)/kernel/drivers/block/ && \
+    xz /lib/modules/$(ls /lib/modules | grep -v extramodules | head -n1)/kernel/drivers/block/ublk_drv.ko
 RUN rm -rf /lib/modules/*/kernel/sound \
            /lib/modules/*/kernel/drivers/gpu \
            /lib/modules/*/kernel/drivers/video \
@@ -20,8 +28,43 @@ RUN rm -rf /lib/modules/*/kernel/sound \
            /lib/modules/*/kernel/drivers/net/wireless/mediatek \
            /lib/modules/*/kernel/drivers/net/wireless/ralink \
            /lib/modules/*/kernel/drivers/net/wireless/ath \
-           /lib/modules/*/kernel/drivers/net/wireless/marvell && \
-    depmod -b / -a $(ls /lib/modules)
+           /lib/modules/*/kernel/drivers/net/wireless/marvell \
+           /lib/modules/*/kernel/drivers/ata \
+           /lib/modules/*/kernel/drivers/input/joystick \
+           /lib/modules/*/kernel/drivers/input/misc \
+           /lib/modules/*/kernel/drivers/input/serio \
+           /lib/modules/*/kernel/drivers/input/gameport \
+           /lib/modules/*/kernel/drivers/i2c \
+           /lib/modules/*/kernel/drivers/spi \
+           /lib/modules/*/kernel/drivers/misc/eeprom \
+           /lib/modules/*/kernel/fs/btrfs \
+           /lib/modules/*/kernel/fs/xfs \
+           /lib/modules/*/kernel/fs/nilfs2 \
+           /lib/modules/*/kernel/fs/reiserfs \
+           /lib/modules/*/kernel/fs/ecryptfs \
+           /lib/modules/*/kernel/fs/smb \
+           /lib/modules/*/kernel/fs/hfsplus \
+           /lib/modules/*/kernel/fs/quota \
+           /lib/modules/*/kernel/fs/ocfs2 \
+           /lib/modules/*/kernel/fs/gfs2 \
+           /lib/modules/*/kernel/fs/ubifs \
+           /lib/modules/*/kernel/fs/udf \
+           /lib/modules/*/kernel/fs/jfs \
+           /lib/modules/*/kernel/fs/isofs \
+           /lib/modules/*/kernel/fs/9p \
+           /lib/modules/*/kernel/fs/bcachefs \
+           /lib/modules/*/kernel/fs/hfs \
+           /lib/modules/*/kernel/fs/nfs \
+           /lib/modules/*/kernel/fs/ceph \
+           /lib/modules/*/kernel/fs/exfat \
+           /lib/modules/*/kernel/fs/netfs \
+           /lib/modules/*/kernel/fs/dlm \
+           /lib/modules/*/kernel/fs/cachefiles \
+           /lib/modules/*/kernel/fs/efivarfs \
+           /lib/modules/*/kernel/fs/jffs2 \
+           /lib/modules/*/kernel/fs/nfsd \
+           /lib/modules/*/kernel/fs/ntfs3 && \
+    depmod -b / -a $(ls /lib/modules | grep -v extramodules | head -n1)
 COPY --chown=0:0 ./.tmp/initramfs/ /
 RUN printf '/sbin/wpa_supplicant\n/sbin/wpa_cli\n/etc/wpa_supplicant/wpa_supplicant.conf\n' \
     > /etc/mkinitfs/features.d/wpa_supplicant.files
@@ -45,10 +88,10 @@ RUN find /lib/firmware/brcm -name '*.zst' | while read f; do \
 RUN mkinitfs \
     -F "$(cat /etc/mkinitfs/mkinitfs.conf | grep features | cut -d'"' -f2) network dhcp wifi mmc wpa_supplicant" \
     -o /initramfs-rpi \
-    $(ls /lib/modules)
+    $(ls /lib/modules | grep -v extramodules | head -n1)
+
 # Unpack, patch, repack
 COPY ./patch-init.awk /tmp/patch-init.awk
-ARG BOOT_MODE=""
 RUN mkdir /tmp/initramfs-work && \
     cd /tmp/initramfs-work && \
     zcat /initramfs-rpi | cpio -id && \

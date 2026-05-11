@@ -3,12 +3,12 @@ TMP := .tmp
 OUT := out
 
 # Ensure required variables are set
-REQUIRED_VARS := ALPINE_VERSION RPI_FIRMWARE_TAG SDCARD_LABEL UMTPRD_PATH AP_SSID AP_PSK
+REQUIRED_VARS := ALPINE_VERSION RPI_FIRMWARE_TAG SDCARD_LABEL AP_SSID AP_PSK
 ifndef BOOT_SERVER_SDCARD
 REQUIRED_VARS += BOOT_SERVER_IP BOOT_SERVER_PORT
 SDCARD_SIZE_MB := 128
 else
-SDCARD_SIZE_MB := 64
+SDCARD_SIZE_MB := 128
 endif
 
 # Default values for gadget-ha-rclone
@@ -56,13 +56,12 @@ $(APKOVL): Dockerfile.apkovl $(TMP)/apkovl $(TMP)/lib/modules
 	@mkdir -p $(OUT)
 	$(PODMAN_BUILD) --output type=local,dest=$(OUT) -f Dockerfile.apkovl .
 
-$(TMP)/apkovl: $(shell find apkovl -type f 2>/dev/null) $(UMTPRD_PATH) $(shell find usb-gadget -type f 2>/dev/null)
+$(TMP)/apkovl: $(shell find apkovl -type f 2>/dev/null) $(shell find usb-gadget -type f 2>/dev/null)
 	@rm -rf $@
 	@mkdir -p $(dir $@)
 	@cp -a apkovl $@
 	@find $@ -type f -exec perl -pi -e 's/@([a-zA-Z0-9_]+)@/$$ENV{$$1} \/\/ $$&/eg' {} +
 	@mkdir -p $@/usr/bin
-	@install -m755 $(UMTPRD_PATH) $@/usr/bin/umtprd
 	@install -m755 $$(nix build .#usb-gadget --print-out-paths --no-link)/bin/gadget-web $@/usr/bin/gadget-web
 	@install -m755 $$(nix build .#usb-gadget --print-out-paths --no-link)/bin/gadget-ha-rclone $@/usr/bin/gadget-ha-rclone
 
@@ -85,7 +84,7 @@ $(TMP)/config.txt:
 	@echo "enable_uart=1" >> $@
 	@echo "uart_2ndstage=1" >> $@
 	@echo "dtoverlay=miniuart-bt" >> $@
-	@echo "dtoverlay=dwc2" >> $@
+	@echo "dtoverlay=dwc2,dr_mode=host" >> $@
 	@echo "dtoverlay=disable-bt" >> $@
 	@echo "device_tree=$(DTB_FILE)" >> $@
 

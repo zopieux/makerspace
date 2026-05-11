@@ -17,31 +17,13 @@
           pkgs = nixpkgsFor.${system};
         in
         {
-          umtprd = pkgs.pkgsCross.aarch64-multiplatform-musl.stdenv.mkDerivation {
-            pname = "umtprd";
-            version = "1.8.1";
-            src = pkgs.fetchFromGitHub {
-              owner = "viveris";
-              repo = "uMTP-Responder";
-              rev = "umtprd-1.8.1";
-              hash = "sha256-kZXuEgyxNHKbuZjoMpOVjt6ygiar73/C1FsF942pjFM=";
-            };
-            makeFlags = [
-              "CC=${pkgs.pkgsCross.aarch64-multiplatform-musl.stdenv.cc.targetPrefix}gcc"
-              "LDFLAGS=-static -lpthread -lrt"
-            ];
-            installPhase = ''
-              install -Dm755 umtprd $out/bin/umtprd
-            '';
-          };
-
           usb-gadget = pkgs.pkgsCross.aarch64-multiplatform-musl.buildGoModule {
             pname = "usb-gadget";
             version = "0.0.1";
             src = ./usb-gadget;
-            vendorHash = "sha256-Db09ftEG9DJgN6mb4LaA2cOGiOjQx36DzeDqzAik2Fs=";
+            vendorHash = "sha256-8StURvZEOWX/Z5/Yo7DVR1QMoc/JspSJcuOxX/DL/b4=";
             subPackages = [ "cmd/gadget-web" "cmd/gadget-ha-rclone" ];
-            env = { CGO_ENABLED = "0"; };
+            env = { CGO_ENABLED = "1"; };
             ldflags = [ "-s" "-w" "-extldflags '-static'" ];
           };
         }
@@ -55,7 +37,6 @@
         in
         {
           default = pkgs.mkShell {
-            UMTPRD_PATH = "${self.packages.${system}.umtprd}/bin/umtprd";
             USB_GADGET_PATH = "${self.packages.${system}.usb-gadget}/bin/gadget-web";
 
             buildInputs = with pkgs; [
