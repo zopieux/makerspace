@@ -165,7 +165,8 @@ func syncAndAttach(client mqtt.Client, username string) (*usb.UblkServer, error)
 		// Prepare rclone include flags
 		args := []string{"copy", source, portalDir}
 		exts := strings.Join(usb.ValidExts, ",")
-		args = append(args, "--include", fmt.Sprintf("**/*{%s}", exts))
+		args = append(args, "--include", fmt.Sprintf("*.{%s}", exts))
+		args = append(args, "--include", fmt.Sprintf("**/*.{%s}", exts))
 		args = append(args, "--max-age", "365d", "--max-size", "10M", "--inplace")
 
 		addFile := func(msg, content string) {

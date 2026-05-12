@@ -20,7 +20,7 @@ const (
 )
 
 var (
-	ValidExts = []string{".nc", ".cnc", ".tap", ".wiz", ".txt", ".eia"}
+	ValidExts = []string{"nc", "cnc", "tap", "wiz", "txt", "eia"}
 )
 
 type GadgetConfig struct {

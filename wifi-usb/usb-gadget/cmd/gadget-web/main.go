@@ -111,7 +111,7 @@ func handleUpload(w http.ResponseWriter, r *http.Request) {
 
 	validExt := false
 	for _, e := range usb.ValidExts {
-		if ext == e {
+		if ext == "."+e {
 			validExt = true
 			break
 		}
