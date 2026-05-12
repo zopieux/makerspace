@@ -97,6 +97,10 @@ func NewVirtualFAT(root string, label string) (*VirtualFAT, error) {
 	// 2. Assign clusters (BFS order, root dir gets cluster 2)
 	nextCluster := uint32(rootCluster)
 	v.assignClusters(rootNode, &nextCluster)
+
+	if nextCluster < 65538 {
+		nextCluster = 65538
+	}
 	v.totalClusters = nextCluster // clusters 0..nextCluster-1 are used
 
 	// FAT sectors needed: ceil(totalClusters * 4 / sectorSize)
@@ -183,9 +187,8 @@ func (v *VirtualFAT) walk(path string) (*node, error) {
 // Assign clusters: every file/dir gets ceil(size/clusterBytes) clusters
 // ------------------------------------------------------------
 func (v *VirtualFAT) assignClusters(n *node, next *uint32) {
-	n.startCluster = *next
-
 	if n.isDir {
+		n.startCluster = *next
 		// directories always get at least 1 cluster
 		dirSize := v.dirSectorCount(n) * sectorSize
 		clusters := (dirSize + sectorsPerCluster*sectorSize - 1) / (sectorsPerCluster * sectorSize)
@@ -197,10 +200,12 @@ func (v *VirtualFAT) assignClusters(n *node, next *uint32) {
 			v.assignClusters(child, next)
 		}
 	} else {
-		clusters := uint32(1)
-		if n.size > 0 {
-			clusters = (n.size + sectorsPerCluster*sectorSize - 1) / (sectorsPerCluster * sectorSize)
+		if n.size == 0 {
+			n.startCluster = 0
+			return
 		}
+		n.startCluster = *next
+		clusters := (n.size + sectorsPerCluster*sectorSize - 1) / (sectorsPerCluster * sectorSize)
 		*next += clusters
 		v.clusterToNode[n.startCluster] = n
 		// record all clusters of this file
@@ -214,6 +219,9 @@ func (v *VirtualFAT) assignClusters(n *node, next *uint32) {
 // Build FAT chains
 // ------------------------------------------------------------
 func (v *VirtualFAT) buildFATChains(n *node) {
+	if !n.isDir && n.size == 0 {
+		return
+	}
 	var clusters uint32
 	if n.isDir {
 		dirSize := v.dirSectorCount(n) * sectorSize
@@ -222,11 +230,7 @@ func (v *VirtualFAT) buildFATChains(n *node) {
 			clusters = 1
 		}
 	} else {
-		if n.size == 0 {
-			clusters = 1
-		} else {
-			clusters = (n.size + sectorsPerCluster*sectorSize - 1) / (sectorsPerCluster * sectorSize)
-		}
+		clusters = (n.size + sectorsPerCluster*sectorSize - 1) / (sectorsPerCluster * sectorSize)
 	}
 	for i := uint32(0); i < clusters-1; i++ {
 		v.fat[n.startCluster+i] = n.startCluster + i + 1
@@ -248,10 +252,8 @@ func (v *VirtualFAT) buildFATChains(n *node) {
 func (v *VirtualFAT) dirSectorCount(n *node) uint32 {
 	// Each child may need LFN entries + 1 short entry; root also has . and ..
 	entries := 0
-	if n == v.root {
-		entries += 2 // . and ..  (actually root has no . .. in FAT32 but we add them)
-	} else {
-		entries += 2
+	if n != v.root {
+		entries += 2 // Only add . and .. for subdirs
 	}
 	for _, child := range n.children {
 		entries += lfnEntryCount(child.name) + 1
@@ -269,12 +271,12 @@ func (v *VirtualFAT) buildDirSectors(n *node) {
 
 	if n == v.root {
 		entries = append(entries, makeVolumeLabelEntry(v.label, n.modTime)...)
+	} else {
+		dot := makeDotEntry(".", n.startCluster, n.modTime)
+		dotdot := makeDotEntry("..", 0, n.modTime) // 0 = root for simplicity
+		entries = append(entries, dot...)
+		entries = append(entries, dotdot...)
 	}
-
-	dot := makeDotEntry(".", n.startCluster, n.modTime)
-	dotdot := makeDotEntry("..", 0, n.modTime) // 0 = root for simplicity
-	entries = append(entries, dot...)
-	entries = append(entries, dotdot...)
 
 	for _, child := range n.children {
 		entries = append(entries, makeDirEntries(child)...)
@@ -319,8 +321,8 @@ func (v *VirtualFAT) buildBootSector(fatSectors uint32) {
 	put16(19, 0)                      // total sectors 16 (0 = use 32-bit field)
 	b[21] = 0xF8                      // media type
 	put16(22, 0)                      // FAT size 16 (0 for FAT32)
-	put16(24, 63)                     // sectors per track
-	put16(26, 255)                    // number of heads
+	put16(24, 32)                     // sectors per track
+	put16(26, 2)                      // number of heads
 	put32(28, 0)                      // hidden sectors
 	put32(32, uint32(v.totalSectors)) // total sectors 32
 	put32(36, fatSectors)             // FAT size 32
@@ -342,7 +344,7 @@ func (v *VirtualFAT) buildFSInfo() {
 	b := v.fsInfo[:]
 	binary.LittleEndian.PutUint32(b[0:], 0x41615252)   // lead sig
 	binary.LittleEndian.PutUint32(b[484:], 0x61417272) // struct sig
-	binary.LittleEndian.PutUint32(b[488:], 0xFFFFFFFF) // free count unknown
+	binary.LittleEndian.PutUint32(b[488:], v.totalClusters-rootCluster-1) // Actual free count
 	binary.LittleEndian.PutUint32(b[492:], 0xFFFFFFFF) // next free unknown
 	binary.LittleEndian.PutUint32(b[508:], 0xAA550000) // trail sig
 }
@@ -462,60 +464,60 @@ func (r readerAtWrapper) WriteAt(p []byte, off int64) (int, error) {
 }
 
 func (v *VirtualFAT) WriteAt(buf []byte, off int64) (int, error) {
-    startSector := uint64(off) / sectorSize
+	startSector := uint64(off) / sectorSize
 
-    for i := 0; i < len(buf); i += sectorSize {
-        sector := startSector + uint64(i/sectorSize)
-        end := i + sectorSize
-        if end > len(buf) {
-            end = len(buf)
-        }
-        chunk := buf[i:end]
+	for i := 0; i < len(buf); i += sectorSize {
+		sector := startSector + uint64(i/sectorSize)
+		end := i + sectorSize
+		if end > len(buf) {
+			end = len(buf)
+		}
+		chunk := buf[i:end]
 
-        if sector >= v.fatStartSector && sector < v.dataStartSector {
-            v.scanFATWrite(chunk, sector)
-        } else if sector >= v.dataStartSector {
-            v.scanDirWrite(chunk, sector)
-        }
-    }
-    return len(buf), nil
+		if sector >= v.fatStartSector && sector < v.dataStartSector {
+			v.scanFATWrite(chunk, sector)
+		} else if sector >= v.dataStartSector {
+			v.scanDirWrite(chunk, sector)
+		}
+	}
+	return len(buf), nil
 }
 
 func (v *VirtualFAT) scanFATWrite(chunk []byte, sector uint64) {
 	return
-    // Optional: track cluster frees (FAT rather than dir).
-    for i := 0; i+4 <= len(chunk); i += 4 {
-        val := binary.LittleEndian.Uint32(chunk[i:])
-        cluster := uint32(sector-v.fatStartSector)*128 + uint32(i/4)
-        if val == fatFree && cluster >= rootCluster && int(cluster) < len(v.fat) {
-            if n, ok := v.clusterToNode[cluster]; ok {
-                rel, _ := filepath.Rel(v.sourceDir, n.realPath)
-                log.Printf("[intercept] cluster %d freed (file: %s)", cluster, rel)
-            }
-        }
-    }
+	// Optional: track cluster frees (FAT rather than dir).
+	for i := 0; i+4 <= len(chunk); i += 4 {
+		val := binary.LittleEndian.Uint32(chunk[i:])
+		cluster := uint32(sector-v.fatStartSector)*128 + uint32(i/4)
+		if val == fatFree && cluster >= rootCluster && int(cluster) < len(v.fat) {
+			if n, ok := v.clusterToNode[cluster]; ok {
+				rel, _ := filepath.Rel(v.sourceDir, n.realPath)
+				log.Printf("[intercept] cluster %d freed (file: %s)", cluster, rel)
+			}
+		}
+	}
 }
 
 func (v *VirtualFAT) scanDirWrite(chunk []byte, sector uint64) {
-    rel := sector - v.dataStartSector
-    cluster := uint32(rel/sectorsPerCluster) + rootCluster
-    if _, isDir := v.clusterToDirData[cluster]; !isDir {
-        return
-    }
-    for i := 0; i+32 <= len(chunk); i += 32 {
-        if chunk[i] == 0xE5 {
-            hi := binary.LittleEndian.Uint16(chunk[i+20:])
-            lo := binary.LittleEndian.Uint16(chunk[i+26:])
-            fileCluster := uint32(hi)<<16 | uint32(lo)
-            if n, ok := v.clusterToNode[fileCluster]; ok {
-                relPath, _ := filepath.Rel(v.sourceDir, n.realPath)
-                select {
-                case v.DeleteEvents <- relPath:
-                default:
-                }
-            }
-        }
-    }
+	rel := sector - v.dataStartSector
+	cluster := uint32(rel/sectorsPerCluster) + rootCluster
+	if _, isDir := v.clusterToDirData[cluster]; !isDir {
+		return
+	}
+	for i := 0; i+32 <= len(chunk); i += 32 {
+		if chunk[i] == 0xE5 {
+			hi := binary.LittleEndian.Uint16(chunk[i+20:])
+			lo := binary.LittleEndian.Uint16(chunk[i+26:])
+			fileCluster := uint32(hi)<<16 | uint32(lo)
+			if n, ok := v.clusterToNode[fileCluster]; ok {
+				relPath, _ := filepath.Rel(v.sourceDir, n.realPath)
+				select {
+				case v.DeleteEvents <- relPath:
+				default:
+				}
+			}
+		}
+	}
 }
 
 // ------------------------------------------------------------
@@ -679,10 +681,10 @@ func ServeVirtualFAT(sourceDir string, label string) (*UblkServer, error) {
 		Types: ublk.ParamTypeBasic,
 		Basic: ublk.ParamBasic{
 			LogicalBSShift:  9,  // 512 B logical
-			PhysicalBSShift: 12, // 4096 B physical
+			PhysicalBSShift: 9,  // Match logical sector size for legacy hosts
 			IOOptShift:      12,
 			IOMinShift:      9,
-			MaxSectors:      sectorsPerCluster * 16,
+			MaxSectors:      128,
 			DevSectors:      vfat.totalSectors,
 		},
 	})
