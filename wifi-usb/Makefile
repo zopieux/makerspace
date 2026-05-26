@@ -3,18 +3,13 @@ TMP := .tmp
 OUT := out
 
 # Ensure required variables are set
-REQUIRED_VARS := ALPINE_VERSION RPI_FIRMWARE_TAG SDCARD_LABEL AP_SSID AP_PSK
+REQUIRED_VARS := ALPINE_VERSION RPI_FIRMWARE_TAG SDCARD_LABEL AP_SSID AP_PSK CONFIG_URL
 ifndef BOOT_SERVER_SDCARD
 REQUIRED_VARS += BOOT_SERVER_IP BOOT_SERVER_PORT
 SDCARD_SIZE_MB := 128
 else
 SDCARD_SIZE_MB := 128
 endif
-
-# Default values for gadget-ha-rclone
-export MQTT_BROKER ?= tcp://localhost:1883
-export MQTT_BASE_TOPIC ?= usb-gadget
-export RCLONE_PREFIX ?= drive:usb-gadget
 
 $(foreach v,$(REQUIRED_VARS),$(if $(strip $($v)),,$(error $v is unset)))
 
@@ -48,13 +43,13 @@ else
 PODMAN_BUILD_INITRAMFS := $(PODMAN_BUILD)
 endif
 
-$(TMP)/initramfs-rpi $(TMP)/vmlinuz-rpi $(TMP)/lib/modules &: Dockerfile.initramfs patch-init.awk $(TMP)/initramfs
+$(TMP)/initramfs-rpi $(TMP)/vmlinuz-rpi $(TMP)/lib/modules &: Containerfile.initramfs patch-init.awk $(TMP)/initramfs
 	@mkdir -p $(TMP)
-	$(PODMAN_BUILD_INITRAMFS) --output type=local,dest=$(TMP) -f Dockerfile.initramfs .
+	$(PODMAN_BUILD_INITRAMFS) --output type=local,dest=$(TMP) -f Containerfile.initramfs .
 
-$(APKOVL): Dockerfile.apkovl $(TMP)/apkovl $(TMP)/lib/modules
+$(APKOVL): Containerfile.apkovl $(TMP)/apkovl $(TMP)/lib/modules
 	@mkdir -p $(OUT)
-	$(PODMAN_BUILD) --output type=local,dest=$(OUT) -f Dockerfile.apkovl .
+	$(PODMAN_BUILD) --output type=local,dest=$(OUT) -f Containerfile.apkovl .
 
 $(TMP)/apkovl: $(shell find apkovl -type f 2>/dev/null) $(shell find usb-gadget -type f 2>/dev/null)
 	@rm -rf $@

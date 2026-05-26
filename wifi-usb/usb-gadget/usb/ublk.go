@@ -70,6 +70,7 @@ type VirtualFAT struct {
 
 	sourceDir    string
 	DeleteEvents chan string
+	ReadEvents   chan string
 }
 
 // ------------------------------------------------------------
@@ -85,6 +86,7 @@ func NewVirtualFAT(root string, label string) (*VirtualFAT, error) {
 		label:            fmt.Sprintf("%-11s", strings.ToUpper(label)),
 		sourceDir:        root,
 		DeleteEvents:     make(chan string, 100),
+		ReadEvents:       make(chan string, 100),
 	}
 
 	// 1. Walk the source directory and build the node tree
@@ -175,7 +177,6 @@ func (v *VirtualFAT) walk(path string) (*node, error) {
 	for _, e := range entries {
 		child, err := v.walk(filepath.Join(path, e.Name()))
 		if err != nil {
-			log.Printf("skipping %s: %v", e.Name(), err)
 			continue
 		}
 		n.children = append(n.children, child)
@@ -428,7 +429,11 @@ func (v *VirtualFAT) readDataSector(sector uint64) ([]byte, error) {
 	clusterIndex := cluster - n.startCluster
 	fileByteOffset := int64(clusterIndex)*int64(clusterByteSize) + int64(sectorInCluster)*sectorSize
 
-	log.Printf("[ublk] read %s: %d", n.realPath, fileByteOffset)
+	// log.Printf("[ublk] read %s: %d", n.realPath, fileByteOffset)
+	select {
+	case v.ReadEvents <- filepath.Base(n.realPath):
+	default:
+	}
 
 	// Zero-copy: read directly from real file
 	buf := make([]byte, sectorSize)
@@ -656,6 +661,7 @@ type UblkServer struct {
 	dev          *ublk.Device
 	handler      *ublk.ReaderAtHandler
 	DeleteEvents <-chan string
+	ReadEvents   <-chan string
 	closeChan    chan struct{}
 }
 
@@ -704,21 +710,32 @@ func ServeVirtualFAT(sourceDir string, label string) (*UblkServer, error) {
 		dev:          dev,
 		handler:      handler,
 		DeleteEvents: vfat.DeleteEvents,
+		ReadEvents:   vfat.ReadEvents,
 		closeChan:    make(chan struct{}),
 	}, nil
 }
 
 // Close stops the UBLK device and cleans up resources.
-func (s *UblkServer) Close() {
+func (s *UblkServer) Close() error {
+	var errs []error
 	if s.dev != nil {
-		s.dev.Delete()
+		if err := s.dev.Delete(); err != nil {
+			errs = append(errs, fmt.Errorf("delete dev: %w", err))
+		}
 	}
 	if s.handler != nil {
-		s.handler.Close()
+		if err := s.handler.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("close handler: %w", err))
+		}
 	}
 	if s.closeChan != nil {
 		close(s.closeChan)
+		s.closeChan = nil
 	}
+	if len(errs) > 0 {
+		return fmt.Errorf("ublk close errors: %v", errs)
+	}
+	return nil
 }
 
 // Closed returns a channel that is closed when the UblkServer is closed.

@@ -138,12 +138,24 @@ func Detach() {
 	}
 
 	if currentUblk != nil {
-		currentUblk.Close()
+		devPath := currentUblk.DevPath()
+
+		// Poll to ensure the kernel has fully released the block device
+		// before we attempt to close (and delete) it via go-ublk.
+		for i := 0; i < 50; i++ {
+			f, err := os.OpenFile(devPath, os.O_RDONLY|os.O_EXCL, 0)
+			if err == nil {
+				f.Close()
+				break
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+
+		if err := currentUblk.Close(); err != nil {
+			log.Printf("Failed to close ublk properly: %v", err)
+		}
 		currentUblk = nil
 	}
-
-	// Give the kernel a moment to release references
-	time.Sleep(100 * time.Millisecond)
 }
 
 func getUDC() string {

@@ -1,11 +1,24 @@
 {
   description = "Alpine Raspberry Pi Zero 2 USB Gadget Image";
 
-  inputs = {
-    nixpkgs.url = "github:nixos/nixpkgs?ref=nixos-unstable";
+  nixConfig = {
+    extra-substituters = [
+      "https://nixos-raspberrypi.cachix.org"
+    ];
+    extra-trusted-public-keys = [
+      "nixos-raspberrypi.cachix.org-1:4iMO9LXa8BqhU+Rpg6LQKiGa2lsNh/j2oiYLNOQ5sPI="
+    ];
   };
 
-  outputs = { self, nixpkgs }@inputs:
+  inputs = {
+    nixpkgs.url = "github:nixos/nixpkgs?ref=nixos-unstable";
+    nixos-raspberrypi = {
+      url = "github:nvmd/nixos-raspberrypi/main";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+  };
+
+  outputs = { self, nixpkgs, nixos-raspberrypi }@inputs:
     let
       supportedSystems = [ "x86_64-linux" "aarch64-linux" ];
       forAllSystems = nixpkgs.lib.genAttrs supportedSystems;
@@ -21,11 +34,16 @@
             pname = "usb-gadget";
             version = "0.0.1";
             src = ./usb-gadget;
-            vendorHash = "sha256-8StURvZEOWX/Z5/Yo7DVR1QMoc/JspSJcuOxX/DL/b4=";
+            vendorHash = "sha256-bBBesRtJIcxMb7on9ve9Qqi7poDvlINli8+p82WHsPw=";
             subPackages = [ "cmd/gadget-web" "cmd/gadget-ha-rclone" ];
             env = { CGO_ENABLED = "1"; };
             ldflags = [ "-s" "-w" "-extldflags '-static'" ];
           };
+
+          zero2w = (nixos-raspberrypi.lib.nixosSystem {
+            specialArgs = inputs // { inherit system; };
+            modules = [ ./pizero2w.nix ];
+          }).config.system.build.images.sd-card;
         }
       );
 
@@ -53,6 +71,8 @@
               dtc
               go
               gopls
+
+              qemu
             ];
           };
         }

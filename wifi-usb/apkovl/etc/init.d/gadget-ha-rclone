@@ -9,10 +9,8 @@ pidfile="/run/${name}.pid"
 output_logger="logger -t ${name} -p daemon.info"
 error_logger="logger -t ${name} -p daemon.err"
 
-# Environmental Defaults
-export MQTT_BROKER="@MQTT_BROKER@"
-export MQTT_BASE_TOPIC="@MQTT_BASE_TOPIC@"
-export RCLONE_PREFIX="@RCLONE_PREFIX@"
+export CONFIG_URL="@CONFIG_URL@"
+export RCLONE_CONFIG="@RCLONE_CONFIG@"
 
 depend() {
     need net localmount
