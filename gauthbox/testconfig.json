@@ -1,0 +1,45 @@
+{
+    "authboxes": {
+        "pantorouter": {
+            "name": "Panto<rou&ter>",
+            "location": "zrh",
+            "api_key": "abc"
+        },
+        "jointerplaner": {
+            "name": "Jointer-planer",
+            "location": "zrh",
+            "api_key": "xyz"
+        }
+    },
+    "config": {
+        "badge_reader": {
+            "name": "HID OMNIKEY 5427 CK",
+            "timeout_ms": 200
+        },
+        "badge_auth": {
+            "url_template": "http://control.shop:8000/auth?tool={{.tool}}&name={{.name}}&badge={{`{{.badge}}`}}&action={{`{{.state}}`}}&minutes={{`{{.duration}}`}}",
+            "usage_duration_minutes": 10
+        },
+        "relay": {
+            "pin": 21,
+            "active_low": true,
+            "debounce_ms": 25
+        },
+        "current_sensing": {
+            "pin": 23,
+            "active_low": true,
+            "debounce_ms": 200
+        },
+        "green_led": {
+            "pin": 26
+        },
+        "red_led": {
+            "pin": 20
+        },
+        "mqtt": {
+            "broker": "mqtt://control.shop:1883",
+            "topic": "shop"
+        },
+        "idle_duration_s": 5
+    }
+}

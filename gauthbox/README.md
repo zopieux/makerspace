@@ -39,64 +39,47 @@ flowchart TD
 
 ### Config server
 
-[`authbox_config.go`](cmd/config/authbox_config.go) is a lightweight server for the per-authbox JSON config.
-It reads from a main config file which describes the base (shared) config, the list of available authboxes and per-authbox overrides.
+[`authbox_config.go`](cmd/config/authbox_config.go) is a lightweight server for serving per-authbox configuration.
+The server evaluates a **Jsonnet** configuration file on startup.
 
-The base config file must follow a schema similar to the following:
+An example `config.jsonnet` configuration looks like this:
 
-```jsonc
+```jsonnet
+local base = {
+  mqtt: {
+    broker: "tcp://control.shop:1883",
+    topic: "shop",
+  },
+  badge_reader: {
+    name: "HID OMNIKEY 5427 CK",
+    timeout_ms: 200,
+  },
+  badge_auth: {
+    // Go's text/template syntax is used to dynamically construct the URL.
+    // The keys {{.tool}}, {{.apiKey}}, {{.name}}, and {{.location}} are auto-resolved by the config server.
+    // Use {{`{{.badgeId}}`}}, {{`{{.state}}`}}, and {{`{{.duration}}`}} to escape variables meant for client evaluation.
+    url_template: "http://control.shop:8000/auth?tool={{.tool}}&name={{.name}}&api_key={{.apiKey}}&badge={{`{{.badgeId}}`}}&action={{`{{.state}}`}}&minutes={{`{{.duration}}`}}",
+    usage_duration_minutes: 10,
+  },
+  relay: {
+    pin: 21,
+    active_low: true,
+    debounce_ms: 25,
+  },
+  current_sensing: {
+    pin: 23,
+    active_low: true,
+    debounce_ms: 200,
+  },
+  green_led: { pin: 26 },
+  red_led: { pin: 20 },
+  idle_duration_s: 5,
+};
+
+local api(key, name) = { api_key: key, name: name, location: "zrh" };
+
 {
-    // List of authboxes to send a config for.
-    "authboxes": {
-        "pantorouter": {            // Hostname
-            "name": "Pantorouter",  // API name
-            "location": "zrh",      // API location
-            "api_key": "abc",       // API key
-            "custom": {             // Optional overrides to the below config.
-                "idle_duration_s": 30
-            }
-        },
-        "jointerplaner": {
-            "name": "Jointer-planer",
-            "location": "zrh",
-            "api_key": "xyz"
-        }
-    },
-    // Default config served to all authboxes.
-    "config": {
-        "badge_reader": {
-            "name": "HID OMNIKEY 5427 CK",
-            "timeout_ms": 200
-        },
-        "badge_auth": {
-            // {{.x}} variables are replaced by the above values for the
-            // requesting host. The template will then further be interpreted by
-            // the authbox with context `badge`, `state`, and `duration`, which
-            // therefore needs to be escaped here.
-            "url_template": "http://control.shop:8000/auth?tool={{.tool}}&name={{.name}}&api_key={{.api_key}}&badge={{`{{.badge}}`}}&action={{`{{.state}}`}}&minutes={{`{{.duration}}`}}",
-            "usage_duration_minutes": 10
-        },
-        "relay": {
-            "pin": 21,
-            "active_low": true,
-            "debounce_ms": 25
-        },
-        "current_sensing": {
-            "pin": 23,
-            "active_low": true,
-            "debounce_ms": 200
-        },
-        "green_led": {
-            "pin": 26
-        },
-        "red_led": {
-            "pin": 20
-        },
-        "mqtt": {
-            "broker": "mqtt://control.shop:1883",
-            "topic": "shop"
-        },
-        "idle_duration_s": 5
-    }
+  "pantorouter": base + api("abc", "Pantorouter") + { idle_duration_s: 30 },
+  "jointerplaner": base + api("xyz", "Jointer-planer"),
 }
 ```

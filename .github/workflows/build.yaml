@@ -149,11 +149,12 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
+          go-version-file: gauthbox/go.mod
           cache-dependency-path: gauthbox/go.sum
 
       - name: Build
-        run: cd gauthbox && go build -v ./cmd/config/authbox_config.go
-      
+        run: cd gauthbox && go build -v -o authbox_config ./cmd/config
+
       - name: Upload authbox_config
         uses: actions/upload-artifact@v4
         with:

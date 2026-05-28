@@ -47,9 +47,34 @@ func main() {
 	}
 	slog.Info("got config", slog.Any("config", config))
 
+	if config.CurrentSensing == nil || config.Relay == nil || config.GreenLed == nil || config.RedLed == nil || config.BadgeReader == nil || config.BadgeAuth == nil {
+		log.Fatalf("invalid configuration for buttonless authbox: missing hardware pins or badge settings")
+	}
+
+	if config.MqttBroker != nil {
+		if config.MqttBroker.DeviceId == "" {
+			config.MqttBroker.DeviceId = name
+		}
+		if config.MqttBroker.DeviceName == "" {
+			config.MqttBroker.DeviceName = name
+		}
+		if config.MqttBroker.Model == "" {
+			config.MqttBroker.Model = "Button-less (Woodshop)"
+		}
+		if config.MqttBroker.Manufacturer == "" {
+			config.MqttBroker.Manufacturer = "Zurich Makerspace Organizers"
+		}
+		if config.MqttBroker.SwVersion == "" {
+			config.MqttBroker.SwVersion = "gauthbox ⋅ v1"
+		}
+		if config.MqttBroker.HwVersion == "" {
+			config.MqttBroker.HwVersion = "Pi 3B+ PoE"
+		}
+	}
+
 	mqttComponents := []gauthbox.MqttComponent{}
 
-	badgeDev, err := gauthbox.BadgeReader(config.BadgeReader)
+	badgeDev, err := gauthbox.BadgeReaderFn(*config.BadgeReader)
 	if err != nil {
 		log.Fatalf("could not initialize badge reader: %s", err)
 	}
@@ -64,7 +89,7 @@ func main() {
 	mqttComponents = append(mqttComponents, accessDev.Mqtt)
 	go accessDev.Looper()
 
-	currentSenseDev, err := gauthbox.CurrentSensing(config.CurrentSensing)
+	currentSenseDev, err := gauthbox.CurrentSensing(*config.CurrentSensing)
 	if err != nil {
 		log.Fatalf("could not initialize current sensing: %s", err)
 	}
@@ -72,7 +97,7 @@ func main() {
 	go currentSenseDev.Looper()
 
 	relay := make(chan bool)
-	relayDev, err := gauthbox.Relay(config.Relay, relay)
+	relayDev, err := gauthbox.Relay(*config.Relay, relay)
 	if err != nil {
 		log.Fatalf("could not initialize relay: %s", err)
 	}
@@ -80,14 +105,14 @@ func main() {
 	go relayDev.Looper()
 
 	green := make(chan interface{})
-	greenLed, err := gauthbox.Blinker(config.GreenLed, "ACT", green)
+	greenLed, err := gauthbox.Blinker(*config.GreenLed, "ACT", green)
 	if err != nil {
 		log.Fatalf("could not initialize green led: %s", err)
 	}
 	go greenLed()
 
 	red := make(chan interface{})
-	redLed, err := gauthbox.Blinker(config.RedLed, "PWR", red)
+	redLed, err := gauthbox.Blinker(*config.RedLed, "PWR", red)
 	if err != nil {
 		log.Fatalf("could not initialize red led: %s", err)
 	}
@@ -97,7 +122,7 @@ func main() {
 	var mqttEvents <-chan interface{}
 	if config.MqttBroker != nil {
 		var mqttLooper func()
-		mqttLooper, mqttEvents, mqttPublish = gauthbox.MqttBroker(name, *config.MqttBroker, mqttComponents)
+		mqttLooper, mqttEvents, mqttPublish = gauthbox.MqttBroker(*config.MqttBroker, mqttComponents)
 		go mqttLooper()
 	}
 
@@ -105,7 +130,13 @@ func main() {
 	idleTimer := time.NewTimer(0)
 	idleTimer.Stop()
 
-	badgeExtendDuration := time.Duration(config.BadgeAuth.UsageMinutes) * time.Minute
+	var badgeExtendDuration time.Duration
+	if config.BadgeAuth != nil {
+		badgeExtendDuration = time.Duration(config.BadgeAuth.UsageMinutes) * time.Minute
+	}
+	if badgeExtendDuration <= 0 {
+		badgeExtendDuration = 10 * time.Minute
+	}
 	badgeExpired := time.NewTimer(0)
 	badgeExpired.Stop()
 
@@ -179,7 +210,7 @@ func main() {
 			}
 			// Otherwise, the tool is either OFF or in grace period (IDLE).
 			// Authenticate and switch the relay.
-			err := gauthbox.BadgeAuth(config.BadgeAuth, badgeId, gauthbox.BADGE_ACTION_INITIAL)
+			_, err := gauthbox.BadgeAuth(*config.BadgeAuth, badgeId, gauthbox.BADGE_ACTION_INITIAL)
 			if err != nil {
 				// Blink the red LED a few times to provide “access denied” feedback.
 				wasOff := state.state == STATE_OFF
@@ -234,7 +265,7 @@ func main() {
 			// Authenticate again in the background if the machine is not OFF.
 			// This is only to accurately keep track of the real utilization duration.
 			go func(badgeId string) {
-				err := gauthbox.BadgeAuth(config.BadgeAuth, badgeId, gauthbox.BADGE_ACTION_EXTEND)
+				_, err := gauthbox.BadgeAuth(*config.BadgeAuth, badgeId, gauthbox.BADGE_ACTION_EXTEND)
 				if err != nil {
 					// That extend call is only for informational purposes.
 					// Do not cut off power if that fails. Stopping a machine while in use can be dangerous or expensive.
@@ -251,7 +282,7 @@ func main() {
 				green <- gauthbox.LedStatic{On: false}
 				red <- gauthbox.LedStatic{On: true}
 				go func(badgeId string) {
-					err := gauthbox.BadgeAuth(config.BadgeAuth, badgeId, gauthbox.BADGE_ACTION_RETURN)
+					_, err := gauthbox.BadgeAuth(*config.BadgeAuth, badgeId, gauthbox.BADGE_ACTION_RETURN)
 					if err != nil {
 						// That return call is only for informational purposes.
 						slog.Warn("error authenticating badge for return", slog.String("id", state.badgeId), slog.Any("error", err))
