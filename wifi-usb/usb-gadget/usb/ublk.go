@@ -489,18 +489,6 @@ func (v *VirtualFAT) WriteAt(buf []byte, off int64) (int, error) {
 }
 
 func (v *VirtualFAT) scanFATWrite(chunk []byte, sector uint64) {
-	return
-	// Optional: track cluster frees (FAT rather than dir).
-	for i := 0; i+4 <= len(chunk); i += 4 {
-		val := binary.LittleEndian.Uint32(chunk[i:])
-		cluster := uint32(sector-v.fatStartSector)*128 + uint32(i/4)
-		if val == fatFree && cluster >= rootCluster && int(cluster) < len(v.fat) {
-			if n, ok := v.clusterToNode[cluster]; ok {
-				rel, _ := filepath.Rel(v.sourceDir, n.realPath)
-				log.Printf("[intercept] cluster %d freed (file: %s)", cluster, rel)
-			}
-		}
-	}
 }
 
 func (v *VirtualFAT) scanDirWrite(chunk []byte, sector uint64) {

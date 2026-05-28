@@ -57,8 +57,7 @@ $(TMP)/apkovl: $(shell find apkovl -type f 2>/dev/null) $(shell find usb-gadget 
 	@cp -a apkovl $@
 	@find $@ -type f -exec perl -pi -e 's/@([a-zA-Z0-9_]+)@/$$ENV{$$1} \/\/ $$&/eg' {} +
 	@mkdir -p $@/usr/bin
-	@install -m755 $$(nix build .#usb-gadget --print-out-paths --no-link)/bin/gadget-web $@/usr/bin/gadget-web
-	@install -m755 $$(nix build .#usb-gadget --print-out-paths --no-link)/bin/gadget-ha-rclone $@/usr/bin/gadget-ha-rclone
+	@install -m755 $$(nix build ..#usb-gadget --print-out-paths --no-link)/bin/gadget-ha-rclone $@/usr/bin/gadget-ha-rclone
 
 $(TMP)/initramfs: $(shell find initramfs -type f 2>/dev/null)
 	@rm -rf $@
