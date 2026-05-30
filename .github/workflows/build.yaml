@@ -39,7 +39,7 @@ jobs:
           go mod vendor
 
       - name: Clone Buildroot
-        run: git clone --depth=1 --branch=2024.08 https://gitlab.com/buildroot.org/buildroot.git $BR
+        run: git clone --depth=1 --branch=2026.02 https://gitlab.com/buildroot.org/buildroot.git $BR
 
       - name: Apply defconfig
         run: |

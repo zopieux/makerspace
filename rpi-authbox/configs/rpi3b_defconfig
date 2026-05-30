@@ -68,3 +68,6 @@ BR2_PACKAGE_LIBGPIOD2_TOOLS=y
 
 # The actual meat!
 BR2_PACKAGE_GAUTHBOX=y
+
+# Container compilation compatibility
+BR2_TAR_OPTIONS="--no-same-owner"

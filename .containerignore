@@ -1,0 +1,8 @@
+.git
+.direnv
+.vscode
+result
+rpi-authbox/.br
+rpi-authbox/output
+output
+gauthbox/vendor

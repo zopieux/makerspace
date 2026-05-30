@@ -1,0 +1,60 @@
+# Vendor Go dependencies.
+FROM golang:1.24-bookworm AS vendorer
+WORKDIR /gauthbox
+COPY gauthbox/go.mod gauthbox/go.sum ./
+COPY gauthbox/ ./
+RUN --mount=type=cache,target=/root/.cache/go-build \
+    --mount=type=cache,target=/go/pkg/mod \
+    go mod vendor
+
+# Install Buildroot and host compilation dependencies
+FROM ubuntu:24.04 AS builder
+
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y \
+    build-essential \
+    gcc \
+    g++ \
+    bash \
+    bc \
+    cpio \
+    libexpat1-dev \
+    file \
+    util-linux \
+    passwd \
+    git \
+    make \
+    libncurses5-dev \
+    perl \
+    pkg-config \
+    rsync \
+    unzip \
+    wget \
+    p7zip-full \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV BR=/home/runner/work/buildroot
+ENV BUILD=/home/runner/work/build
+ENV BR2_DL_DIR=/home/runner/work/dl
+ENV LOGS=/tmp
+
+RUN git clone --depth=1 --branch=2026.02 https://gitlab.com/buildroot.org/buildroot.git $BR
+
+WORKDIR /workspace
+
+COPY --from=vendorer /gauthbox /workspace/gauthbox
+
+COPY rpi-authbox /workspace/rpi-authbox
+
+RUN --mount=type=cache,target=/home/runner/work/dl \
+    --mount=type=cache,target=/home/runner/work/build \
+    cd /workspace/rpi-authbox && \
+    mkdir -p $BUILD && \
+    make BR2_EXTERNAL=$PWD O=$BUILD -C $BR rpi3b_defconfig && \
+    make -j$(nproc) BR2_EXTERNAL=$PWD O=$BUILD -C $BR source && \
+    make -j$(nproc) BR2_EXTERNAL=$PWD O=$BUILD -C $BR rpi-authbox && \
+    mkdir -p /output && \
+    cp -a $BUILD/rpi-authbox /output/rpi-authbox
+
+FROM scratch
+COPY --from=builder /output/rpi-authbox /rpi-authbox
