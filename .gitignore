@@ -5,6 +5,7 @@ gauthbox/vendor/
 ha-component-authbox/
 esphome/
 esp32*/
+httpboot/
 
 *.000
 *bak
