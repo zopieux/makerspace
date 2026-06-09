@@ -95,6 +95,10 @@ type UsbGadgetConfig struct {
 	UsbConfigName     string `json:"usb_config_name,omitempty"`
 	UsbInquiryVendor  string `json:"usb_inquiry_vendor,omitempty"`
 	UsbInquiryProduct string `json:"usb_inquiry_product,omitempty"`
+	UsbSelectPin      *int   `json:"usb_select_pin,omitempty"`
+	UsbEnablePin      *int   `json:"usb_enable_pin,omitempty"`
+	LogoutPin         *int   `json:"logout_pin,omitempty"`
+	ReloadPin         *int   `json:"reload_pin,omitempty"`
 }
 
 type AuthboxConfig struct {

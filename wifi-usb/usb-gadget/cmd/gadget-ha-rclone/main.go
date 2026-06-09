@@ -45,6 +45,10 @@ var (
 		UsbConfigName:     "USB Storage",
 		UsbInquiryVendor:  "WOODZRH",
 		UsbInquiryProduct: "DropPortal",
+		UsbSelectPin:      intPtr(0),
+		UsbEnablePin:      intPtr(1),
+		LogoutPin:         intPtr(5),
+		ReloadPin:         intPtr(6),
 	}
 )
 
@@ -55,9 +59,10 @@ const (
 )
 
 var (
-	isAttaching    bool
-	lastStatus     string
-	currentUSBMode usb.USBMode = usb.USBModeHost
+	isAttaching     bool
+	lastStatus      string
+	currentUSBMode  usb.USBMode = usb.USBModeHost
+	currentUsername string
 
 	usbCtrl     usb.Orchestrator = &usb.RealOrchestrator{}
 	mqttPublish gauthbox.PublishFunc
@@ -195,6 +200,10 @@ func loadConfig() error {
 		if g.UsbConfigName != "" { conf.UsbConfigName = g.UsbConfigName }
 		if g.UsbInquiryVendor != "" { conf.UsbInquiryVendor = g.UsbInquiryVendor }
 		if g.UsbInquiryProduct != "" { conf.UsbInquiryProduct = g.UsbInquiryProduct }
+		if g.UsbSelectPin != nil { conf.UsbSelectPin = g.UsbSelectPin }
+		if g.UsbEnablePin != nil { conf.UsbEnablePin = g.UsbEnablePin }
+		if g.LogoutPin != nil { conf.LogoutPin = g.LogoutPin }
+		if g.ReloadPin != nil { conf.ReloadPin = g.ReloadPin }
 	}
 
 	return nil
@@ -311,6 +320,7 @@ func syncAndAttach(username string) (usb.UblkDevice, error) {
 
 func doAttach(username string) {
 	if srv, err := syncAndAttach(username); err == nil && srv != nil {
+		currentUsername = username
 		publishUsername(username)
 	}
 }
@@ -325,6 +335,7 @@ func doDetach() {
 	if err := usbCtrl.SwitchUSBMode(usb.USBModeHost); err != nil {
 		slog.Error("Failed to switch USB mode to host", slog.Any("error", err))
 	}
+	currentUsername = ""
 	publishUsername("")
 	wakeReader()
 }
@@ -341,12 +352,61 @@ func main() {
 		os.Exit(1)
 	}
 
+	if conf.UsbSelectPin != nil {
+		usb.UsbSelectPin = *conf.UsbSelectPin
+	}
+	if conf.UsbEnablePin != nil {
+		usb.UsbEnablePin = *conf.UsbEnablePin
+	}
+
 	usbCtrl.Detach()
 	usbCtrl.GadgetClose()
 	if err := usbCtrl.SwitchUSBMode(usb.USBModeHost); err != nil {
 		slog.Error("Failed to switch USB mode to host at startup", slog.Any("error", err))
 	}
 	currentUSBMode = usb.USBModeHost
+
+	if conf.LogoutPin != nil {
+		pin := *conf.LogoutPin
+		_, err := gauthbox.RequestInputPinFn(pin, "pull_up", 100*time.Millisecond, func(high bool) {
+			if !high {
+				cmdQueue <- func() {
+					if currentUsername != "" {
+						currentUsername = ""
+						slog.Info("Logout button pressed - detaching")
+						doDetach()
+					}
+				}
+			}
+		})
+		if err != nil {
+			slog.Error("Failed to initialize logout button", slog.Int("pin", pin), slog.Any("error", err))
+		} else {
+			slog.Info("Initialized logout button", slog.Int("pin", pin))
+		}
+	}
+
+	if conf.ReloadPin != nil {
+		pin := *conf.ReloadPin
+		_, err := gauthbox.RequestInputPinFn(pin, "pull_up", 100*time.Millisecond, func(high bool) {
+			if !high {
+				cmdQueue <- func() {
+					if currentUsername != "" {
+						username := currentUsername
+						currentUsername = ""
+						slog.Info("Reload button pressed - reloading")
+						doDetach()
+						doAttach(username)
+					}
+				}
+			}
+		})
+		if err != nil {
+			slog.Error("Failed to initialize reload button", slog.Int("pin", pin), slog.Any("error", err))
+		} else {
+			slog.Info("Initialized reload button", slog.Int("pin", pin))
+		}
+	}
 
 	// Define MQTT components
 	statusComponent = gauthbox.MqttComponent{
@@ -519,4 +579,8 @@ func main() {
 	for range ticker.C {
 		reportStatus()
 	}
+}
+
+func intPtr(v int) *int {
+	return &v
 }

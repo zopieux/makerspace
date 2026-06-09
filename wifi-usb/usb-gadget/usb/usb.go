@@ -12,9 +12,12 @@ import (
 	"github.com/warthog618/go-gpiocdev"
 )
 
+var (
+	UsbSelectPin = 0
+	UsbEnablePin = 1
+)
+
 const (
-	usbSelectPin     = 0
-	usbEnablePin     = 1
 	gpioWantedPrefix = "pinctrl-bcm2"
 )
 
@@ -64,17 +67,17 @@ func getGpio() error {
 	}
 
 	// Request both lines as outputs. Disable USB initially.
-	enableLine, err := chip.RequestLine(usbEnablePin, gpiocdev.AsOutput(usbEnableDisabled))
+	enableLine, err := chip.RequestLine(UsbEnablePin, gpiocdev.AsOutput(usbEnableDisabled))
 	if err != nil {
 		chip.Close()
-		return fmt.Errorf("failed to request usb-enable GPIO line %d: %w", usbEnablePin, err)
+		return fmt.Errorf("failed to request usb-enable GPIO line %d: %w", UsbEnablePin, err)
 	}
 
-	selectLine, err := chip.RequestLine(usbSelectPin, gpiocdev.AsOutput(usbSelectHost))
+	selectLine, err := chip.RequestLine(UsbSelectPin, gpiocdev.AsOutput(usbSelectHost))
 	if err != nil {
 		enableLine.Close()
 		chip.Close()
-		return fmt.Errorf("failed to request usb-select GPIO line %d: %w", usbSelectPin, err)
+		return fmt.Errorf("failed to request usb-select GPIO line %d: %w", UsbSelectPin, err)
 	}
 
 	gChip = chip

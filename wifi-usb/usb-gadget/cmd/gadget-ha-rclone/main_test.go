@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -165,6 +166,10 @@ func (m *mockOrchestrator) UblkUpdate(sourceDir, label string) (usb.UblkDevice, 
 	return &mockUblkDevice{}, nil
 }
 
+type mockCloser struct{}
+
+func (m *mockCloser) Close() error { return nil }
+
 func Test(t *testing.T) {
 	// 1. Start the Mock MQTT Broker
 	mqttBroker := mqtttest.StartMockMQTT(t)
@@ -190,7 +195,9 @@ func Test(t *testing.T) {
 					"url_template": "%s/auth?badge={{.badgeId}}&state={{.state}}"
 				},
 				"gadget": {
-					"usb_label": "TEST_USB"
+					"usb_label": "TEST_USB",
+					"logout_pin": 5,
+					"reload_pin": 6
 				}
 			}`, "tcp://"+mqttBroker.Addr, ts.URL)
 			return
@@ -230,6 +237,22 @@ func Test(t *testing.T) {
 			Looper: func() {}, // Empty looper, events are simulated directly via badgeChan
 			Events: badgeChan,
 		}, nil
+	}
+
+	// Mock GPIO Input Buttons
+	var logoutCallback func(bool)
+	var reloadCallback func(bool)
+	var btnMu sync.Mutex
+
+	gauthbox.RequestInputPinFn = func(pin int, bias string, debounce time.Duration, callback func(bool)) (io.Closer, error) {
+		btnMu.Lock()
+		defer btnMu.Unlock()
+		if pin == 5 {
+			logoutCallback = callback
+		} else if pin == 6 {
+			reloadCallback = callback
+		}
+		return &mockCloser{}, nil
 	}
 
 	// 5. Run the main() in a background goroutine!
@@ -289,6 +312,30 @@ func Test(t *testing.T) {
 		"onefinity_cnc/authbox_test_cnc/LWT":          "online",
 		"onefinity_cnc/authbox_test_cnc/status/state": "detached",
 	}, time.Second)
+
+	// Verify reload when not authenticated does nothing
+	btnMu.Lock()
+	rCB := reloadCallback
+	lCB := logoutCallback
+	btnMu.Unlock()
+
+	if rCB != nil {
+		slog.Info("Simulating reload button press when not authenticated...")
+		rCB(false)
+		// Wait for command queue processing barrier
+		barrier := make(chan struct{})
+		cmdQueue <- func() {
+			close(barrier)
+		}
+		<-barrier
+
+		// Verify no mode transitions occurred
+		select {
+		case mode := <-mockOrch.modeChan:
+			t.Fatalf("Unexpected USB mode switch when not authenticated: %v", mode)
+		default:
+		}
+	}
 
 	// 8. Simulate a badge scan event!
 	slog.Info("Simulating badge scan event '887766'...")
@@ -354,6 +401,85 @@ func Test(t *testing.T) {
 		"onefinity_cnc/authbox_test_cnc/status/state":   "attached",
 		"onefinity_cnc/authbox_test_cnc/username/state": "test_user",
 	}, time.Second)
+
+	// Simulate reload button press when authenticated
+	if rCB != nil {
+		slog.Info("Simulating reload button press when authenticated...")
+		rCB(false)
+
+		select {
+		case mode := <-mockOrch.modeChan:
+			if mode != usb.USBModeHost {
+				t.Errorf("Expected transition to Host mode during reload, got %s", mode)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("Timeout waiting for Host mode switch during reload")
+		}
+
+		select {
+		case mode := <-mockOrch.modeChan:
+			if mode != usb.USBModePeripheral {
+				t.Errorf("Expected transition to Peripheral mode after reload, got %s", mode)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("Timeout waiting for Peripheral mode switch after reload")
+		}
+
+		select {
+		case <-mockOrch.ublkChan:
+		case <-time.After(time.Second):
+			t.Fatal("Timeout waiting for UblkUpdate to complete after reload")
+		}
+
+		reloadBarrier := make(chan struct{})
+		cmdQueue <- func() {
+			close(reloadBarrier)
+		}
+		<-reloadBarrier
+	}
+
+	// Simulate logout button press when authenticated
+	if lCB != nil {
+		slog.Info("Simulating logout button press...")
+		lCB(false)
+
+		select {
+		case mode := <-mockOrch.modeChan:
+			if mode != usb.USBModeHost {
+				t.Errorf("Expected mode switch to Host after logout button press, got %s", mode)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("Timeout waiting for Host mode switch after logout button press")
+		}
+
+		logoutBarrier := make(chan struct{})
+		cmdQueue <- func() {
+			close(logoutBarrier)
+		}
+		<-logoutBarrier
+	}
+
+	// Re-authenticate user for MQTT detach test
+	slog.Info("Re-authenticating user for MQTT detach test...")
+	badgeChan <- "887766"
+	select {
+	case mode := <-mockOrch.modeChan:
+		if mode != usb.USBModePeripheral {
+			t.Errorf("Expected transition to Peripheral mode, got %s", mode)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Timeout waiting for transition to Peripheral mode")
+	}
+	select {
+	case <-mockOrch.ublkChan:
+	case <-time.After(time.Second):
+		t.Fatal("Timeout waiting for UblkUpdate to complete")
+	}
+	doneChan3 := make(chan struct{})
+	cmdQueue <- func() {
+		close(doneChan3)
+	}
+	<-doneChan3
 
 	// 9. Simulate a detach request via MQTT command topic!
 	slog.Info("Simulating MQTT detach command...")
