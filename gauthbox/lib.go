@@ -101,6 +101,13 @@ type UsbGadgetConfig struct {
 	ReloadPin         *int   `json:"reload_pin,omitempty"`
 }
 
+type ButtonConfig struct {
+	Pin        int    `json:"pin"`
+	ActiveLow  bool   `json:"active_low"`
+	DebounceMs int    `json:"debounce_ms"`
+	Bias       string `json:"bias"`
+}
+
 type AuthboxConfig struct {
 	MqttBroker     *MqttConfig           `json:"mqtt,omitempty"`
 	BadgeReader    *BadgeReaderConfig    `json:"badge_reader,omitempty"`
@@ -111,6 +118,8 @@ type AuthboxConfig struct {
 	RedLed         *LedConfig            `json:"red_led,omitempty"`
 	IdleSeconds    uint32                `json:"idle_duration_s,omitempty"`
 	Gadget         *UsbGadgetConfig      `json:"gadget,omitempty"`
+	OnButton       *ButtonConfig         `json:"on_button,omitempty"`
+	OffButton      *ButtonConfig         `json:"off_button,omitempty"`
 }
 
 type BadgingChan = <-chan string

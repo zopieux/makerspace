@@ -33,9 +33,10 @@ func (m *mockGpioLine) Close() error {
 }
 
 type mockCloser struct{}
+
 func (m *mockCloser) Close() error { return nil }
 
-func TestButtonlessHarness(t *testing.T) {
+func TestOnOffButtonHarness(t *testing.T) {
 	hostname, err := os.Hostname()
 	if err != nil {
 		t.Fatalf("could not retrieve self hostname: %s", err)
@@ -77,9 +78,17 @@ func TestButtonlessHarness(t *testing.T) {
 				"relay": {
 					"pin": 13
 				},
+				"on_button": {
+					"pin": 14,
+					"debounce_ms": 10
+				},
+				"off_button": {
+					"pin": 15,
+					"debounce_ms": 10
+				},
 				"mqtt": {
 					"broker": "tcp://%s",
-					"topic": "buttonless_topic"
+					"topic": "onoffbutton_topic"
 				}
 			}`, ts.URL, mqttBroker.Addr)
 			return
@@ -101,7 +110,9 @@ func TestButtonlessHarness(t *testing.T) {
 	redCh := make(chan int, 1000)
 	relayCh := make(chan int, 1000)
 
-	var mockInputCallback func(bool)
+	var currentSensingCallback func(bool)
+	var onButtonCallback func(bool)
+	var offButtonCallback func(bool)
 
 	// Override all low-level hardware hooks
 	gauthbox.RequestOutputPinFn = func(pin int, initVal int) (gauthbox.GpioLine, error) {
@@ -117,7 +128,13 @@ func TestButtonlessHarness(t *testing.T) {
 	}
 
 	gauthbox.RequestInputPinFn = func(pin int, bias string, debounce time.Duration, callback func(bool)) (io.Closer, error) {
-		mockInputCallback = callback
+		if pin == 12 {
+			currentSensingCallback = callback
+		} else if pin == 14 {
+			onButtonCallback = callback
+		} else if pin == 15 {
+			offButtonCallback = callback
+		}
 		return &mockCloser{}, nil
 	}
 
@@ -162,7 +179,7 @@ func TestButtonlessHarness(t *testing.T) {
 	}
 
 	// 4. Override os.Args and start main in a goroutine
-	os.Args = []string{"buttonless", ts.URL}
+	os.Args = []string{"onoffbutton", ts.URL}
 	go main()
 
 	// Helper to assert MQTT topic/payload publications
@@ -223,44 +240,64 @@ func TestButtonlessHarness(t *testing.T) {
 	mockBadgeEvents <- "998877"
 
 	// Verify transition to STATE_IDLE:
-	// - Relay turns ON (1)
+	// - Relay remains OFF (0)
 	// - Red LED turns OFF (0)
-	expectPinVal(relayCh, 1, "relay ON", time.Second)
-	expectPinVal(redCh, 0, "red LED OFF", time.Second)
-
-	// Green LED starts blinking (should receive toggles: 0 then 1 then 0, or 1 then 0 then 1)
+	// - Green LED starts blinking (should receive toggles: 0 then 1 then 0, or 1 then 0 then 1)
+	select {
+	case val := <-relayCh:
+		if val != 0 {
+			t.Fatalf("relay turned ON unexpectedly: %d", val)
+		}
+	case <-time.After(50 * time.Millisecond):
+		// Correct, no relay write
+	}
+	expectPinVal(redCh, 0, "red LED OFF after badge", time.Second)
 	expectPinVal(greenCh, 1, "green LED blinking transition", time.Second)
 
 	// Verify MQTT pub for badged-in state
 	assertMQTTMessages(map[string]string{
-		"buttonless_topic/" + haDeviceId + "/badge/state": "ON",
+		"onoffbutton_topic/" + haDeviceId + "/badge/state": "ON",
 	}, time.Second)
 
-	// 6. Fake power detection (Current sensing high)
+	// 6. Press ON Button
+	slog.Info("Simulating ON button press...")
+	onButtonCallback(true) // transitions to pressed
+
+	// Verify Relay turns ON (1)
+	expectPinVal(relayCh, 1, "relay ON after ON button press", time.Second)
+
+	// 7. Fake power detection (Current sensing high)
 	slog.Info("Simulating current sense high (power on)...")
-	mockInputCallback(true)
+	currentSensingCallback(true)
 
 	// Green LED becomes solid ON (1)
 	expectPinVal(greenCh, 1, "green LED solid ON", time.Second)
 
 	// Verify MQTT current sensing state is "10" (drawing current)
 	assertMQTTMessages(map[string]string{
-		"buttonless_topic/" + haDeviceId + "/current/state": "10",
+		"onoffbutton_topic/" + haDeviceId + "/current/state": "10",
 	}, time.Second)
 
-	// 7. No more power (Current sensing low)
-	slog.Info("Simulating current sense low (power off)...")
-	mockInputCallback(false)
+	// 8. Press OFF Button
+	slog.Info("Simulating OFF button press...")
+	offButtonCallback(true) // transitions to pressed
+
+	// Verify Relay turns OFF (0)
+	expectPinVal(relayCh, 0, "relay OFF after OFF button press", time.Second)
 
 	// Green LED starts blinking again
 	expectPinVal(greenCh, 1, "green LED blinking again", time.Second)
 
+	// Simulate current sense going low as consequence of relay turning off
+	slog.Info("Simulating current sense low (power off)...")
+	currentSensingCallback(false)
+
 	// Verify MQTT current sensing state is "0"
 	assertMQTTMessages(map[string]string{
-		"buttonless_topic/" + haDeviceId + "/current/state": "0",
+		"onoffbutton_topic/" + haDeviceId + "/current/state": "0",
 	}, time.Second)
 
-	// 8. Wait for Idle Timeout (2 seconds)
+	// 9. Wait for Idle Timeout (2 seconds)
 	slog.Info("Waiting for idle timeout...")
 	expectPinVal(relayCh, 0, "relay OFF after idle timeout", 3*time.Second)
 	expectPinVal(greenCh, 0, "green LED OFF after idle timeout", time.Second)
@@ -268,7 +305,7 @@ func TestButtonlessHarness(t *testing.T) {
 
 	// Verify MQTT messages for detached / OFF state
 	assertMQTTMessages(map[string]string{
-		"buttonless_topic/" + haDeviceId + "/badge/state": "OFF",
+		"onoffbutton_topic/" + haDeviceId + "/badge/state": "OFF",
 	}, time.Second)
 
 	// Wait a moment for background goroutines to complete their calls
@@ -300,6 +337,6 @@ func expectedMQTTMsgMap(hostname string) map[string]string {
 	haDeviceId := "authbox_" + hostname
 	return map[string]string{
 		"homeassistant/device/" + haDeviceId + "/config": "*",
-		"buttonless_topic/" + haDeviceId + "/LWT":        "*",
+		"onoffbutton_topic/" + haDeviceId + "/LWT":       "*",
 	}
 }

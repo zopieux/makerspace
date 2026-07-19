@@ -10,13 +10,13 @@ import (
 
 // Mock packet types matching MQTT protocol
 const (
-	mqttPacketConnect    = 1
-	mqttPacketConnack    = 2
-	mqttPacketPublish    = 3
-	mqttPacketSubscribe  = 8
-	mqttPacketSuback     = 9
-	mqttPacketPingreq    = 12
-	mqttPacketPingresp   = 13
+	mqttPacketConnect   = 1
+	mqttPacketConnack   = 2
+	mqttPacketPublish   = 3
+	mqttPacketSubscribe = 8
+	mqttPacketSuback    = 9
+	mqttPacketPingreq   = 12
+	mqttPacketPingresp  = 13
 )
 
 type MQTTMsg struct {

@@ -1,0 +1,375 @@
+package main
+
+import (
+	"fmt"
+	"gauthbox"
+	"log"
+	"log/slog"
+	"os"
+	"time"
+
+	slogenv "github.com/cbrewster/slog-env"
+)
+
+const (
+	STATE_OFF    = iota
+	STATE_IDLE   = iota
+	STATE_IN_USE = iota
+)
+
+type State struct {
+	state         int
+	badgeId       string
+	accessAllowed bool
+	relay         bool
+	currentIsHigh bool
+	mqttConnected bool
+}
+
+func main() {
+	slog.SetDefault(slog.New(slogenv.NewHandler(slog.NewTextHandler(os.Stderr, nil))))
+
+	if len(os.Args) != 2 {
+		fmt.Fprintf(os.Stderr, "Usage: %s <control-command URL>\n", os.Args[0])
+		os.Exit(1)
+	}
+	ccUrl := os.Args[1]
+
+	name, err := os.Hostname()
+	if err != nil {
+		log.Fatalf("could not retrieve self hostname: %s", err)
+	}
+
+	config, err := gauthbox.GetConfig(ccUrl)
+	if err != nil {
+		log.Fatalf("could not retrieve or parse remote nor local config: %s", err)
+	}
+	slog.Info("got config", slog.Any("config", config))
+
+	if config.CurrentSensing == nil || config.Relay == nil || config.GreenLed == nil || config.RedLed == nil || config.BadgeReader == nil || config.BadgeAuth == nil || config.OnButton == nil || config.OffButton == nil {
+		log.Fatalf("invalid configuration for onoffbutton authbox: missing hardware pins, button pins, or badge settings")
+	}
+
+	if config.MqttBroker != nil {
+		if config.MqttBroker.DeviceId == "" {
+			config.MqttBroker.DeviceId = name
+		}
+		if config.MqttBroker.DeviceName == "" {
+			config.MqttBroker.DeviceName = name
+		}
+		if config.MqttBroker.Model == "" {
+			config.MqttBroker.Model = "On-Off Button (Woodshop)"
+		}
+		if config.MqttBroker.Manufacturer == "" {
+			config.MqttBroker.Manufacturer = "Zurich Makerspace Organizers"
+		}
+		if config.MqttBroker.SwVersion == "" {
+			config.MqttBroker.SwVersion = "gauthbox ⋅ v1"
+		}
+		if config.MqttBroker.HwVersion == "" {
+			config.MqttBroker.HwVersion = "Pi 3B+ PoE"
+		}
+	}
+
+	mqttComponents := []gauthbox.MqttComponent{}
+
+	badgeDev, err := gauthbox.BadgeReaderFn(*config.BadgeReader)
+	if err != nil {
+		log.Fatalf("could not initialize badge reader: %s", err)
+	}
+	mqttComponents = append(mqttComponents, badgeDev.Mqtt)
+	go badgeDev.Looper()
+
+	accessAllowed := make(chan bool)
+	accessDev, err := gauthbox.AccessAllowed(accessAllowed)
+	if err != nil {
+		log.Fatalf("could not initialize access-allowed: %s", err)
+	}
+	mqttComponents = append(mqttComponents, accessDev.Mqtt)
+	go accessDev.Looper()
+
+	currentSenseDev, err := gauthbox.CurrentSensing(*config.CurrentSensing)
+	if err != nil {
+		log.Fatalf("could not initialize current sensing: %s", err)
+	}
+	mqttComponents = append(mqttComponents, currentSenseDev.Mqtt)
+	go currentSenseDev.Looper()
+
+	relay := make(chan bool)
+	relayDev, err := gauthbox.Relay(*config.Relay, relay)
+	if err != nil {
+		log.Fatalf("could not initialize relay: %s", err)
+	}
+	mqttComponents = append(mqttComponents, relayDev.Mqtt)
+	go relayDev.Looper()
+
+	green := make(chan interface{})
+	greenLed, err := gauthbox.Blinker(*config.GreenLed, "ACT", green)
+	if err != nil {
+		log.Fatalf("could not initialize green led: %s", err)
+	}
+	go greenLed()
+
+	red := make(chan interface{})
+	redLed, err := gauthbox.Blinker(*config.RedLed, "PWR", red)
+	if err != nil {
+		log.Fatalf("could not initialize red led: %s", err)
+	}
+	go redLed()
+
+	// Initialize ON and OFF buttons
+	onButtonEvents := make(chan bool)
+	onButtonCloser, err := gauthbox.RequestInputPinFn(
+		config.OnButton.Pin,
+		config.OnButton.Bias,
+		time.Duration(config.OnButton.DebounceMs)*time.Millisecond,
+		func(high bool) {
+			pressed := high
+			if config.OnButton.ActiveLow {
+				pressed = !pressed
+			}
+			slog.Debug("gpio: ON button transition", slog.Int("pin", config.OnButton.Pin), slog.Bool("pressed", pressed))
+			if pressed {
+				onButtonEvents <- true
+			}
+		},
+	)
+	if err != nil {
+		log.Fatalf("could not initialize ON button: %s", err)
+	}
+	defer onButtonCloser.Close()
+
+	offButtonEvents := make(chan bool)
+	offButtonCloser, err := gauthbox.RequestInputPinFn(
+		config.OffButton.Pin,
+		config.OffButton.Bias,
+		time.Duration(config.OffButton.DebounceMs)*time.Millisecond,
+		func(high bool) {
+			pressed := high
+			if config.OffButton.ActiveLow {
+				pressed = !pressed
+			}
+			slog.Debug("gpio: OFF button transition", slog.Int("pin", config.OffButton.Pin), slog.Bool("pressed", pressed))
+			if pressed {
+				offButtonEvents <- true
+			}
+		},
+	)
+	if err != nil {
+		log.Fatalf("could not initialize OFF button: %s", err)
+	}
+	defer offButtonCloser.Close()
+
+	var mqttPublish gauthbox.PublishFunc = func(gauthbox.MqttComponent, interface{}) {}
+	var mqttEvents <-chan interface{}
+	if config.MqttBroker != nil {
+		var mqttLooper func()
+		mqttLooper, mqttEvents, mqttPublish = gauthbox.MqttBroker(*config.MqttBroker, mqttComponents)
+		go mqttLooper()
+	}
+
+	idleDuration := time.Duration(config.IdleSeconds) * time.Second
+	idleTimer := time.NewTimer(0)
+	idleTimer.Stop()
+
+	var badgeExtendDuration time.Duration
+	if config.BadgeAuth != nil {
+		badgeExtendDuration = time.Duration(config.BadgeAuth.UsageMinutes) * time.Minute
+	}
+	if badgeExtendDuration <= 0 {
+		badgeExtendDuration = 10 * time.Minute
+	}
+	badgeExpired := time.NewTimer(0)
+	badgeExpired.Stop()
+
+	state := State{state: STATE_OFF, badgeId: "", accessAllowed: true, relay: false, mqttConnected: false}
+
+	pleaseSelfReset := false
+	maybeSelfReset := func() {
+		// Only reset if we're in the OFF state to avoid shutting down in-use machinery.
+		if pleaseSelfReset && state.state == STATE_OFF {
+			// Exit with error. The process manager will restart us.
+			os.Exit(42)
+		}
+	}
+
+	setRelay := func(on bool) {
+		state.relay = on
+		relay <- on
+		go mqttPublish(relayDev.Mqtt, on)
+	}
+
+	notifyState := func() {
+		stateStr := state.String()
+		slog.Debug("state changed", slog.String("state", stateStr))
+		gauthbox.SdNotify("STATUS=" + stateStr)
+	}
+
+	setRelay(false)
+	green <- gauthbox.LedStatic{On: false}
+	red <- gauthbox.LedStatic{On: true}
+
+	gauthbox.SdNotify("READY=1")
+	notifyState()
+
+	for {
+		select {
+		case e := <-mqttEvents:
+			switch event := e.(type) {
+			case gauthbox.MqttConnected:
+				state.mqttConnected = true
+				// Re-publish state so it's fresh.
+				go mqttPublish(currentSenseDev.Mqtt, state.currentIsHigh)
+				go mqttPublish(relayDev.Mqtt, state.relay)
+				go mqttPublish(badgeDev.Mqtt, state.badgedIn())
+				go notifyState()
+			case gauthbox.MqttDisonnected:
+				// Nothing special, just report the state.
+				// Not being able to communicate with MQTT is non-fatal.
+				state.mqttConnected = false
+				slog.Warn("lost mqtt broker connection", slog.Any("error", event.Error))
+				go notifyState()
+			case gauthbox.MqttResetRequest:
+				pleaseSelfReset = true
+				maybeSelfReset()
+			}
+		case allowed := <-accessAllowed:
+			state.accessAllowed = allowed
+			slog.Info("access allowed changed", slog.Bool("allowed", allowed))
+		case badgeId := <-badgeDev.Events:
+			// Someone badged.
+			if state.state == STATE_IN_USE {
+				// If the tool is already in active use, nothing to do.
+				continue
+			}
+			if !state.accessAllowed {
+				red <- gauthbox.LedBlink{Interval: time.Millisecond * 120}
+				time.Sleep(time.Millisecond * 1200)
+				red <- gauthbox.LedStatic{On: true}
+				slog.Warn("badging attempt while access is disallowed", slog.String("id", badgeId))
+				continue
+			}
+			// Otherwise, the tool is either OFF or in grace period (IDLE).
+			// Authenticate.
+			_, err := gauthbox.BadgeAuth(*config.BadgeAuth, badgeId, gauthbox.BADGE_ACTION_INITIAL)
+			if err != nil {
+				// Blink the red LED a few times to provide “access denied” feedback.
+				wasOff := state.state == STATE_OFF
+				slog.Warn("error authenticating badge", slog.String("id", badgeId), slog.Any("error", err))
+				red <- gauthbox.LedBlink{Interval: time.Millisecond * 120}
+				time.Sleep(time.Millisecond * 1200)
+				red <- gauthbox.LedStatic{On: wasOff}
+			} else {
+				// All good, user is authenticated. Transition to STATE_IDLE, blink green led.
+				// Note: Relay is NOT switched on yet, it takes an ON button press.
+				state.state = STATE_IDLE
+				state.badgeId = badgeId
+				idleTimer.Reset(idleDuration)
+				badgeExpired.Reset(badgeExtendDuration)
+				green <- gauthbox.LedBlink{Interval: time.Millisecond * 500}
+				red <- gauthbox.LedStatic{On: false}
+				go mqttPublish(badgeDev.Mqtt, state.badgedIn())
+				go notifyState()
+			}
+		case <-onButtonEvents:
+			// ON button was pressed.
+			if state.state == STATE_IDLE {
+				// Turn the relay on.
+				setRelay(true)
+				// Reset idle timer to give the user another chance to turn on the machine.
+				idleTimer.Reset(idleDuration)
+				go notifyState()
+			}
+		case <-offButtonEvents:
+			// OFF button was pressed.
+			if state.state == STATE_IDLE || state.state == STATE_IN_USE {
+				// Switch relay off and return to STATE_IDLE.
+				setRelay(false)
+				state.state = STATE_IDLE
+				idleTimer.Reset(idleDuration)
+				green <- gauthbox.LedBlink{Interval: time.Millisecond * 500}
+				go notifyState()
+			}
+		case currentIsHigh := <-currentSenseDev.Events:
+			// Current sensing went up or down.
+			state.currentIsHigh = currentIsHigh
+			go mqttPublish(currentSenseDev.Mqtt, state.currentIsHigh)
+			switch {
+			case currentIsHigh:
+				if state.state != STATE_IDLE {
+					// Not supposed to happen, but anyway, bail.
+					continue
+				}
+				// The machine is now in use, inhibit the idle timer.
+				idleTimer.Stop()
+				state.state = STATE_IN_USE
+				green <- gauthbox.LedStatic{On: true}
+				go notifyState()
+			case !currentIsHigh:
+				if state.state != STATE_IN_USE {
+					// Not supposed to happen, but anyway, bail.
+					continue
+				}
+				// The machine stopped drawing current. Start the idle timer in preparation of shutting off.
+				state.state = STATE_IDLE
+				idleTimer.Reset(idleDuration)
+				green <- gauthbox.LedBlink{Interval: time.Millisecond * 500}
+				go notifyState()
+			}
+		case <-badgeExpired.C:
+			// The badge authentication duration (e.g. 10 minutes) has expired.
+			if state.state == STATE_OFF {
+				continue
+			}
+			badgeExpired.Reset(badgeExtendDuration)
+			// Authenticate again in the background if the machine is not OFF.
+			// This is only to accurately keep track of the real utilization duration.
+			go func(badgeId string) {
+				_, err := gauthbox.BadgeAuth(*config.BadgeAuth, badgeId, gauthbox.BADGE_ACTION_EXTEND)
+				if err != nil {
+					// That extend call is only for informational purposes.
+					// Do not cut off power if that fails. Stopping a machine while in use can be dangerous or expensive.
+					slog.Warn("error authenticating badge for extend", slog.String("id", badgeId), slog.Any("error", err))
+				}
+			}(state.badgeId)
+		case <-idleTimer.C:
+			// The machine is not drawing current and we've reached the idle timeout.
+			// Turn the power relay off, de-authenticate and return unused minutes.
+			switch state.state {
+			case STATE_IDLE:
+				state.state = STATE_OFF
+				setRelay(false)
+				green <- gauthbox.LedStatic{On: false}
+				red <- gauthbox.LedStatic{On: true}
+				go func(badgeId string) {
+					_, err := gauthbox.BadgeAuth(*config.BadgeAuth, badgeId, gauthbox.BADGE_ACTION_RETURN)
+					if err != nil {
+						// That return call is only for informational purposes.
+						slog.Warn("error authenticating badge for return", slog.String("id", state.badgeId), slog.Any("error", err))
+					}
+				}(state.badgeId)
+				state.badgeId = ""
+				go mqttPublish(badgeDev.Mqtt, state.badgedIn())
+				go notifyState()
+				maybeSelfReset()
+			}
+		}
+	}
+}
+
+func (s State) badgedIn() bool {
+	return s.badgeId != ""
+}
+
+func (s State) String() string {
+	return fmt.Sprintf("state: %s, allowed: %s, badged-in: %s, relay: %s, mqtt: %s",
+		map[int]string{
+			STATE_OFF:    "OFF (unauthenticated)",
+			STATE_IDLE:   "IDLE (authenticated)",
+			STATE_IN_USE: "IN USE (authenticated, drawing current)",
+		}[s.state],
+		map[bool]string{false: "no", true: "yes"}[s.accessAllowed],
+		map[bool]string{false: "no", true: "yes"}[s.badgedIn()],
+		map[bool]string{false: "off", true: "on"}[s.relay],
+		map[bool]string{false: "disconnected", true: "connected"}[s.mqttConnected])
+}

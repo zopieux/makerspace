@@ -18,9 +18,8 @@ const (
 )
 
 type State struct {
-	state   int
-	badgeId string
-
+	state         int
+	badgeId       string
 	accessAllowed bool
 	relay         bool
 	currentIsHigh bool
@@ -186,7 +185,7 @@ func main() {
 				// Nothing special, just report the state.
 				// Not being able to communicate with MQTT is non-fatal.
 				state.mqttConnected = false
-				slog.Warn("lost mqtt broken connection", slog.Any("error", event.Error))
+				slog.Warn("lost mqtt broker connection", slog.Any("error", event.Error))
 				go notifyState()
 			case gauthbox.MqttResetRequest:
 				pleaseSelfReset = true
@@ -273,7 +272,7 @@ func main() {
 				}
 			}(state.badgeId)
 		case <-idleTimer.C:
-			// The machine is not drawing current and we've reach the idle timeout.
+			// The machine is not drawing current and we've reached the idle timeout.
 			// Turn the power relay off, de-authenticate and return unused minutes.
 			switch state.state {
 			case STATE_IDLE:

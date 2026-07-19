@@ -22,9 +22,9 @@ var (
 )
 
 type deviceConfig struct {
-	ApiKey      string `json:"api_key"`
-	Location    string `json:"location"`
-	Name        string `json:"name,omitempty"`
+	ApiKey   string `json:"api_key"`
+	Location string `json:"location"`
+	Name     string `json:"name,omitempty"`
 	gauthbox.AuthboxConfig
 }
 
