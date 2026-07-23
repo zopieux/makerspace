@@ -81,31 +81,31 @@ type LedBlink struct {
 	Interval time.Duration
 }
 
-type UsbGadgetConfig struct {
-	RclonePrefix      string `json:"rclone_prefix,omitempty"`
-	MaxTransfer       string `json:"max_transfer,omitempty"`
-	MaxSize           string `json:"max_size,omitempty"`
-	MaxAge            string `json:"max_age,omitempty"`
-	HaSensorModel     string `json:"ha_sensor_model,omitempty"`
-	HaSensorManuf     string `json:"ha_sensor_manufacturer,omitempty"`
-	UsbLabel          string `json:"usb_label,omitempty"`
-	UsbSerialNumber   string `json:"usb_serial_number,omitempty"`
-	UsbManufacturer   string `json:"usb_manufacturer,omitempty"`
-	UsbProduct        string `json:"usb_product,omitempty"`
-	UsbConfigName     string `json:"usb_config_name,omitempty"`
-	UsbInquiryVendor  string `json:"usb_inquiry_vendor,omitempty"`
-	UsbInquiryProduct string `json:"usb_inquiry_product,omitempty"`
-	UsbSelectPin      *int   `json:"usb_select_pin,omitempty"`
-	UsbEnablePin      *int   `json:"usb_enable_pin,omitempty"`
-	LogoutPin         *int   `json:"logout_pin,omitempty"`
-	ReloadPin         *int   `json:"reload_pin,omitempty"`
-}
-
 type ButtonConfig struct {
 	Pin        int    `json:"pin"`
 	ActiveLow  bool   `json:"active_low"`
 	DebounceMs int    `json:"debounce_ms"`
 	Bias       string `json:"bias"`
+}
+
+type UsbGadgetConfig struct {
+	RclonePrefix      string        `json:"rclone_prefix,omitempty"`
+	MaxTransfer       string        `json:"max_transfer,omitempty"`
+	MaxSize           string        `json:"max_size,omitempty"`
+	MaxAge            string        `json:"max_age,omitempty"`
+	HaSensorModel     string        `json:"ha_sensor_model,omitempty"`
+	HaSensorManuf     string        `json:"ha_sensor_manufacturer,omitempty"`
+	UsbLabel          string        `json:"usb_label,omitempty"`
+	UsbSerialNumber   string        `json:"usb_serial_number,omitempty"`
+	UsbManufacturer   string        `json:"usb_manufacturer,omitempty"`
+	UsbProduct        string        `json:"usb_product,omitempty"`
+	UsbConfigName     string        `json:"usb_config_name,omitempty"`
+	UsbInquiryVendor  string        `json:"usb_inquiry_vendor,omitempty"`
+	UsbInquiryProduct string        `json:"usb_inquiry_product,omitempty"`
+	UsbSelectPin      *int          `json:"usb_select_pin,omitempty"`
+	UsbEnablePin      *int          `json:"usb_enable_pin,omitempty"`
+	Button            *ButtonConfig `json:"button,omitempty"`
+	StatusLed         *LedConfig    `json:"status_led,omitempty"`
 }
 
 type AuthboxConfig struct {

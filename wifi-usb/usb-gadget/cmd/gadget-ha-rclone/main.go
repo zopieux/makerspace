@@ -47,15 +47,17 @@ var (
 		UsbInquiryProduct: "DropPortal",
 		UsbSelectPin:      intPtr(0),
 		UsbEnablePin:      intPtr(1),
-		LogoutPin:         intPtr(5),
-		ReloadPin:         intPtr(6),
+		StatusLed:         nil,
+		Button:            nil,
 	}
 )
 
 const (
-	portalDir     = "/dev/shm/usb-gadget"
-	imgFile       = "/dev/shm/usb-gadget.img"
-	retryInterval = 2 * time.Second
+	portalDir           = "/dev/shm/usb-gadget"
+	imgFile             = "/dev/shm/usb-gadget.img"
+	retryInterval       = 2 * time.Second
+	longPressDuration   = 3 * time.Second
+	doublePressDuration = 500 * time.Millisecond
 )
 
 var (
@@ -73,6 +75,7 @@ var (
 	detachComponent   gauthbox.MqttComponent
 
 	wakeBadgeReader = make(chan struct{}, 1)
+	statusLed       gauthbox.GpioLine
 )
 
 var configUrl = getEnv("CONFIG_URL", "http://example.org/config/onefinity-cnc")
@@ -187,23 +190,57 @@ func loadConfig() error {
 
 	if globalConfig.Gadget != nil {
 		g := globalConfig.Gadget
-		if g.RclonePrefix != "" { conf.RclonePrefix = g.RclonePrefix }
-		if g.MaxTransfer != "" { conf.MaxTransfer = g.MaxTransfer }
-		if g.MaxSize != "" { conf.MaxSize = g.MaxSize }
-		if g.MaxAge != "" { conf.MaxAge = g.MaxAge }
-		if g.HaSensorModel != "" { conf.HaSensorModel = g.HaSensorModel }
-		if g.HaSensorManuf != "" { conf.HaSensorManuf = g.HaSensorManuf }
-		if g.UsbLabel != "" { conf.UsbLabel = g.UsbLabel }
-		if g.UsbSerialNumber != "" { conf.UsbSerialNumber = g.UsbSerialNumber }
-		if g.UsbManufacturer != "" { conf.UsbManufacturer = g.UsbManufacturer }
-		if g.UsbProduct != "" { conf.UsbProduct = g.UsbProduct }
-		if g.UsbConfigName != "" { conf.UsbConfigName = g.UsbConfigName }
-		if g.UsbInquiryVendor != "" { conf.UsbInquiryVendor = g.UsbInquiryVendor }
-		if g.UsbInquiryProduct != "" { conf.UsbInquiryProduct = g.UsbInquiryProduct }
-		if g.UsbSelectPin != nil { conf.UsbSelectPin = g.UsbSelectPin }
-		if g.UsbEnablePin != nil { conf.UsbEnablePin = g.UsbEnablePin }
-		if g.LogoutPin != nil { conf.LogoutPin = g.LogoutPin }
-		if g.ReloadPin != nil { conf.ReloadPin = g.ReloadPin }
+		if g.RclonePrefix != "" {
+			conf.RclonePrefix = g.RclonePrefix
+		}
+		if g.MaxTransfer != "" {
+			conf.MaxTransfer = g.MaxTransfer
+		}
+		if g.MaxSize != "" {
+			conf.MaxSize = g.MaxSize
+		}
+		if g.MaxAge != "" {
+			conf.MaxAge = g.MaxAge
+		}
+		if g.HaSensorModel != "" {
+			conf.HaSensorModel = g.HaSensorModel
+		}
+		if g.HaSensorManuf != "" {
+			conf.HaSensorManuf = g.HaSensorManuf
+		}
+		if g.UsbLabel != "" {
+			conf.UsbLabel = g.UsbLabel
+		}
+		if g.UsbSerialNumber != "" {
+			conf.UsbSerialNumber = g.UsbSerialNumber
+		}
+		if g.UsbManufacturer != "" {
+			conf.UsbManufacturer = g.UsbManufacturer
+		}
+		if g.UsbProduct != "" {
+			conf.UsbProduct = g.UsbProduct
+		}
+		if g.UsbConfigName != "" {
+			conf.UsbConfigName = g.UsbConfigName
+		}
+		if g.UsbInquiryVendor != "" {
+			conf.UsbInquiryVendor = g.UsbInquiryVendor
+		}
+		if g.UsbInquiryProduct != "" {
+			conf.UsbInquiryProduct = g.UsbInquiryProduct
+		}
+		if g.UsbSelectPin != nil {
+			conf.UsbSelectPin = g.UsbSelectPin
+		}
+		if g.UsbEnablePin != nil {
+			conf.UsbEnablePin = g.UsbEnablePin
+		}
+		if g.Button != nil {
+			conf.Button = g.Button
+		}
+		if g.StatusLed != nil {
+			conf.StatusLed = g.StatusLed
+		}
 	}
 
 	return nil
@@ -215,6 +252,17 @@ func reportStatus() {
 		state = "attaching"
 	} else if usbCtrl.IsBound() {
 		state = "attached"
+	}
+	if statusLed != nil {
+		on := (state == "attached")
+		val := 0
+		if on {
+			val = 1
+		}
+		if conf.StatusLed.ActiveLow {
+			val = 1 - val
+		}
+		statusLed.SetValue(val)
 	}
 	if state != lastStatus {
 		if mqttPublish != nil {
@@ -359,6 +407,20 @@ func main() {
 		usb.UsbEnablePin = *conf.UsbEnablePin
 	}
 
+	if conf.StatusLed != nil {
+		var err error
+		initVal := 0
+		if conf.StatusLed.ActiveLow {
+			initVal = 1
+		}
+		statusLed, err = gauthbox.RequestOutputPinFn(conf.StatusLed.Pin, initVal)
+		if err != nil {
+			slog.Error("Failed to initialize status LED", slog.Int("pin", conf.StatusLed.Pin), slog.Any("error", err))
+		} else {
+			slog.Info("Initialized status LED", slog.Int("pin", conf.StatusLed.Pin))
+		}
+	}
+
 	usbCtrl.Detach()
 	usbCtrl.GadgetClose()
 	if err := usbCtrl.SwitchUSBMode(usb.USBModeHost); err != nil {
@@ -366,45 +428,92 @@ func main() {
 	}
 	currentUSBMode = usb.USBModeHost
 
-	if conf.LogoutPin != nil {
-		pin := *conf.LogoutPin
-		_, err := gauthbox.RequestInputPinFn(pin, "pull_up", 100*time.Millisecond, func(high bool) {
-			if !high {
-				cmdQueue <- func() {
-					if currentUsername != "" {
-						currentUsername = ""
-						slog.Info("Logout button pressed - detaching")
-						doDetach()
-					}
-				}
-			}
-		})
-		if err != nil {
-			slog.Error("Failed to initialize logout button", slog.Int("pin", pin), slog.Any("error", err))
-		} else {
-			slog.Info("Initialized logout button", slog.Int("pin", pin))
-		}
-	}
+	if conf.Button != nil {
+		btn := conf.Button
+		var (
+			mu                 sync.Mutex
+			pressCount         int
+			longPressTriggered bool
+			longPressTimer     *time.Timer
+			doublePressTimer   *time.Timer
+		)
 
-	if conf.ReloadPin != nil {
-		pin := *conf.ReloadPin
-		_, err := gauthbox.RequestInputPinFn(pin, "pull_up", 100*time.Millisecond, func(high bool) {
-			if !high {
-				cmdQueue <- func() {
-					if currentUsername != "" {
-						username := currentUsername
-						currentUsername = ""
-						slog.Info("Reload button pressed - reloading")
-						doDetach()
-						doAttach(username)
+		isPressed := func(high bool) bool {
+			if btn.ActiveLow {
+				return !high
+			}
+			return high
+		}
+
+		_, err := gauthbox.RequestInputPinFn(btn.Pin, btn.Bias, time.Duration(btn.DebounceMs)*time.Millisecond, func(high bool) {
+			mu.Lock()
+			defer mu.Unlock()
+
+			if isPressed(high) {
+				longPressTriggered = false
+				if longPressTimer != nil {
+					longPressTimer.Stop()
+				}
+				longPressTimer = time.AfterFunc(longPressDuration, func() {
+					mu.Lock()
+					defer mu.Unlock()
+					longPressTriggered = true
+					pressCount = 0
+					if doublePressTimer != nil {
+						doublePressTimer.Stop()
+						doublePressTimer = nil
+					}
+					cmdQueue <- func() {
+						if currentUsername != "" {
+							slog.Info("Button long pressed; logging out & detaching", slog.String("username", currentUsername))
+							currentUsername = ""
+							doDetach()
+						}
+					}
+				})
+
+				pressCount++
+				if doublePressTimer != nil {
+					doublePressTimer.Stop()
+					doublePressTimer = nil
+				}
+			} else {
+				if longPressTimer != nil {
+					longPressTimer.Stop()
+					longPressTimer = nil
+				}
+
+				if longPressTriggered {
+					longPressTriggered = false
+					pressCount = 0
+					return
+				}
+
+				if pressCount == 1 {
+					doublePressTimer = time.AfterFunc(doublePressDuration, func() {
+						mu.Lock()
+						defer mu.Unlock()
+						pressCount = 0
+						doublePressTimer = nil
+					})
+				} else if pressCount == 2 {
+					pressCount = 0
+					cmdQueue <- func() {
+						if currentUsername != "" {
+							username := currentUsername
+							currentUsername = ""
+							slog.Info("Button double pressed; reloading", slog.String("username", username))
+							doDetach()
+							doAttach(username)
+						}
 					}
 				}
 			}
 		})
 		if err != nil {
-			slog.Error("Failed to initialize reload button", slog.Int("pin", pin), slog.Any("error", err))
+			slog.Error("Failed to initialize button", slog.Int("pin", btn.Pin), slog.Any("error", err))
 		} else {
-			slog.Info("Initialized reload button", slog.Int("pin", pin))
+			slog.Info("Initialized button", slog.Int("pin", btn.Pin))
 		}
 	}
 
