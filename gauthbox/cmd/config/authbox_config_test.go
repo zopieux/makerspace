@@ -37,9 +37,13 @@ local api(key, name) = {
     green_led: { pin: 5 },
   },
   "device2": base + api("api2", "Device Two") + {
+    on_button: { pin: 10, active_low: true, debounce_ms: 50, bias: "pull_up" },
+    off_button: { pin: 11, active_low: false, debounce_ms: 20, bias: "pull_down" },
     gadget: {
       usb_label: "GADGET_USB",
       max_size: "100M",
+      button: { pin: 5, active_low: true, debounce_ms: 10, bias: "pull_up" },
+      status_led: { pin: 12, active_low: true },
     },
   },
 }
@@ -99,6 +103,18 @@ local api(key, name) = {
 
 	if res2["gadget"].(map[string]interface{})["usb_label"] != "GADGET_USB" {
 		t.Errorf("Expected gadget.usb_label='GADGET_USB', got %v", res2["gadget"].(map[string]interface{})["usb_label"])
+	}
+	if btn := res2["on_button"].(map[string]interface{}); btn["pin"].(float64) != 10 || btn["bias"] != "pull_up" {
+		t.Errorf("Expected on_button.pin=10 and bias='pull_up', got pin=%v bias=%v", btn["pin"], btn["bias"])
+	}
+	if btn := res2["off_button"].(map[string]interface{}); btn["pin"].(float64) != 11 || btn["bias"] != "pull_down" {
+		t.Errorf("Expected off_button.pin=11 and bias='pull_down', got pin=%v bias=%v", btn["pin"], btn["bias"])
+	}
+	if gbtn := res2["gadget"].(map[string]interface{})["button"].(map[string]interface{}); gbtn["pin"].(float64) != 5 || gbtn["active_low"].(bool) != true {
+		t.Errorf("Expected gadget.button pin=5 active_low=true, got %v", gbtn)
+	}
+	if sled := res2["gadget"].(map[string]interface{})["status_led"].(map[string]interface{}); sled["pin"].(float64) != 12 || sled["active_low"].(bool) != true {
+		t.Errorf("Expected gadget.status_led pin=12 active_low=true, got %v", sled)
 	}
 	if _, hasIdle := res2["idle_duration_s"]; hasIdle {
 		t.Errorf("device2 should not have 'idle_duration_s' field")
