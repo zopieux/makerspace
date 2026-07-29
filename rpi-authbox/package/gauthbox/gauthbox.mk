@@ -2,6 +2,6 @@ GAUTHBOX_VERSION = local
 GAUTHBOX_SITE = $(BR2_EXTERNAL_RPI_AUTHBOX_PATH)/../gauthbox
 GAUTHBOX_SITE_METHOD = local
 GAUTHBOX_LICENSE = MIT
-GAUTHBOX_GOMOD = ./cmd/local
+GAUTHBOX_GOMOD = ./cmd/authbox
 
 $(eval $(golang-package))

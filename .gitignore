@@ -6,6 +6,7 @@ ha-component-authbox/
 esphome/
 esp32*/
 httpboot/
+rpi-authbox-out
 
 *.000
 *bak
