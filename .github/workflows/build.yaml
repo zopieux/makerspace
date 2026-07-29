@@ -12,6 +12,7 @@ jobs:
       BUILD:         /home/runner/work/build
       BR2_DL_DIR:    /home/runner/work/dl
       LOGS:          /tmp
+      RATELIMIT:     0.1
       CACHEFILE_SOURCES: ${{ github.workspace }}/.cachefile_sources
 
     steps:
@@ -24,7 +25,7 @@ jobs:
           sudo apt-get install -y
           gcc bash bc cpio libexpat1-dev file util-linux passwd git make
           libncurses5-dev perl pkg-config libgcc-12-dev rsync unzip util-linux
-          wget 7zip
+          wget 7zip pv
 
       - name: Check out repository code
         uses: actions/checkout@v4
@@ -47,14 +48,14 @@ jobs:
           mkdir $BUILD
           make BR2_EXTERNAL=$PWD O=$BUILD -C $BR rpi3b_defconfig
 
-      # - name: Restore cached Buildroot sources
-      #   id: restore-br-sources
-      #   uses: actions/cache/restore@v4  # Note the /restore
-      #   with:
-      #     path: ${{ env.BR2_DL_DIR }}
-      #     key: ${{ runner.os }}-br-sources-dummy
-      #     restore-keys: |
-      #       ${{ runner.os }}-br-sources-
+      - name: Restore cached Buildroot sources
+        id: restore-br-sources
+        uses: actions/cache/restore@v4  # Note the /restore
+        with:
+          path: ${{ env.BR2_DL_DIR }}
+          key: ${{ runner.os }}-br-sources-dummy
+          restore-keys: |
+            ${{ runner.os }}-br-sources-
 
       - name: Download missing Buildroot sources
         run: |
@@ -62,61 +63,56 @@ jobs:
           ( cd $BR2_DL_DIR && find -type f -not -name .lock | sort >$CACHEFILE_SOURCES )
           cat $CACHEFILE_SOURCES
 
-      # - name: Save Buildroot sources
-      #   id: save-br-sources
-      #   uses: actions/cache/save@v4  # Note the /save
-      #   with:
-      #     path: ${{ env.BR2_DL_DIR }}
-      #     key: ${{ runner.os }}-br-sources-${{ hashFiles(env.CACHEFILE_SOURCES) }}
+      - name: Save Buildroot sources
+        id: save-br-sources
+        uses: actions/cache/save@v4  # Note the /save
+        with:
+          path: ${{ env.BR2_DL_DIR }}
+          key: ${{ runner.os }}-br-sources-${{ hashFiles(env.CACHEFILE_SOURCES) }}
 
-      # - name: Restore cached host/toolchain
-      #   id: restore-br-host
-      #   uses: actions/cache/restore@v4  # Note the /restore
-      #   with:
-      #     path: ${{ env.BUILD }}
-      #     key: ${{ runner.os }}-br-host-dummy
-      #     restore-keys: |
-      #       ${{ runner.os }}-br-host-
+      - name: Restore cached host/toolchain
+        id: restore-br-host
+        uses: actions/cache/restore@v4  # Note the /restore
+        with:
+          path: ${{ env.BUILD }}
+          key: ${{ runner.os }}-br-host-dummy
+          restore-keys: |
+            ${{ runner.os }}-br-host-
 
       - name: Build missing Buildroot host/toolchain
         run: |
           ( cd $BUILD && $BR/support/scripts/graph-depends --flat-list --quiet --transitive -s toolchain ) \
             | tr ' ' '\n' | grep -E '^(toolchain|host)' | sort | xargs >/tmp/host.pkgs
           cat /tmp/host.pkgs
-          cd rpi-authbox && make BR2_EXTERNAL=$PWD O=$BUILD -C $BR $(cat /tmp/host.pkgs) 2>$LOGS/host.stderr >$LOGS/host.stdout
+          cd rpi-authbox && make BR2_EXTERNAL=$PWD O=$BUILD -C $BR $(cat /tmp/host.pkgs) 2>&1 \
+            | tee $LOGS/host | pv --line-mode --rate-limit $RATELIMIT
 
-      - name: Tail logs
+      - name: Tail host logs
         if: failure()
         continue-on-error: true
         run: |
-          echo stdout:
-          tail -n 300 $LOGS/host.stdout
-          echo
-          echo stderr:
-          tail -n 300 $LOGS/host.stderr
+          echo stdout/stderr for host/toolchain:
+          tail -n 300 $LOGS/host
 
-      # - name: Save cached host/toolchain
-      #   id: save-br-host
-      #   uses: actions/cache/save@v4  # Note the /save
-      #   with:
-      #     path: ${{ env.BUILD }}
-      #     key: ${{ runner.os }}-br-host-${{ hashFiles(env.CACHEFILE_SOURCES) }}
+      - name: Save cached host/toolchain
+        id: save-br-host
+        uses: actions/cache/save@v4  # Note the /save
+        with:
+          path: ${{ env.BUILD }}
+          key: ${{ runner.os }}-br-host-${{ hashFiles(env.CACHEFILE_SOURCES) }}
 
       - name: Build everything
         run: |
           cd rpi-authbox
-          make BR2_EXTERNAL=$PWD O=$BUILD -C $BR rpi-authbox.7z \
-            2>$LOGS/build.stderr >$LOGS/build.stdout
+          make BR2_EXTERNAL=$PWD O=$BUILD -C $BR rpi-authbox.7z 2>&1 \
+            | tee $LOGS/build | pv --line-mode --rate-limit $RATELIMIT
 
-      - name: Tail logs
+      - name: Tail build logs
         if: failure()
         continue-on-error: true
         run: |
-          echo stdout:
-          tail -n 300 $LOGS/build.stdout
-          echo
-          echo stderr:
-          tail -n 300 $LOGS/build.stderr
+          echo stdout/stderr for build:
+          tail -n 300 $LOGS/build
 
       - name: Upload rpi-authbox
         uses: actions/upload-artifact@v4
