@@ -18,6 +18,7 @@ const (
 )
 
 type State struct {
+	deviceType    string
 	state         int
 	badgeId       string
 	accessAllowed bool
@@ -46,8 +47,13 @@ func main() {
 	}
 	slog.Info("got config", slog.Any("config", config))
 
+	deviceType := "buttonless"
+	if config.OnButton != nil && config.OffButton != nil {
+		deviceType = "onoff"
+	}
+
 	if config.CurrentSensing == nil || config.Relay == nil || config.GreenLed == nil || config.RedLed == nil || config.BadgeReader == nil || config.BadgeAuth == nil {
-		log.Fatalf("invalid configuration for buttonless authbox: missing hardware pins or badge settings")
+		log.Fatalf("invalid configuration for authbox: missing hardware pins or badge settings")
 	}
 
 	if config.MqttBroker != nil {
@@ -58,7 +64,10 @@ func main() {
 			config.MqttBroker.DeviceName = name
 		}
 		if config.MqttBroker.Model == "" {
-			config.MqttBroker.Model = "Button-less (Woodshop)"
+			config.MqttBroker.Model = map[string]string{
+				"onoff":      "On-Off Buttons",
+				"buttonless": "Button-less",
+			}[deviceType] + " (Woodshop)"
 		}
 		if config.MqttBroker.Manufacturer == "" {
 			config.MqttBroker.Manufacturer = "Zurich Makerspace Organizers"
@@ -117,6 +126,54 @@ func main() {
 	}
 	go redLed()
 
+	// Initialize ON and OFF buttons conditionally
+	var onButtonEvents chan bool
+	var offButtonEvents chan bool
+
+	if deviceType == "onoff" {
+		onButtonEvents = make(chan bool)
+		onButtonCloser, err := gauthbox.RequestInputPinFn(
+			config.OnButton.Pin,
+			config.OnButton.Bias,
+			time.Duration(config.OnButton.DebounceMs)*time.Millisecond,
+			func(high bool) {
+				pressed := high
+				if config.OnButton.ActiveLow {
+					pressed = !pressed
+				}
+				slog.Debug("gpio: ON button transition", slog.Int("pin", config.OnButton.Pin), slog.Bool("pressed", pressed))
+				if pressed {
+					onButtonEvents <- true
+				}
+			},
+		)
+		if err != nil {
+			log.Fatalf("could not initialize ON button: %s", err)
+		}
+		defer onButtonCloser.Close()
+
+		offButtonEvents = make(chan bool)
+		offButtonCloser, err := gauthbox.RequestInputPinFn(
+			config.OffButton.Pin,
+			config.OffButton.Bias,
+			time.Duration(config.OffButton.DebounceMs)*time.Millisecond,
+			func(high bool) {
+				pressed := high
+				if config.OffButton.ActiveLow {
+					pressed = !pressed
+				}
+				slog.Debug("gpio: OFF button transition", slog.Int("pin", config.OffButton.Pin), slog.Bool("pressed", pressed))
+				if pressed {
+					offButtonEvents <- true
+				}
+			},
+		)
+		if err != nil {
+			log.Fatalf("could not initialize OFF button: %s", err)
+		}
+		defer offButtonCloser.Close()
+	}
+
 	var mqttPublish gauthbox.PublishFunc = func(gauthbox.MqttComponent, interface{}) {}
 	var mqttEvents <-chan interface{}
 	if config.MqttBroker != nil {
@@ -139,12 +196,11 @@ func main() {
 	badgeExpired := time.NewTimer(0)
 	badgeExpired.Stop()
 
-	state := State{state: STATE_OFF, badgeId: "", accessAllowed: true, relay: false, mqttConnected: false}
+	state := State{deviceType: deviceType, state: STATE_OFF, badgeId: "", accessAllowed: true, relay: false, mqttConnected: false}
 
 	pleaseSelfReset := false
 	maybeSelfReset := func() {
-		// Only reset if we're in the OFF state to avoid shutting down in-use
-		// machinery.
+		// Only reset if we're in the OFF state to avoid shutting down in-use machinery.
 		if pleaseSelfReset && state.state == STATE_OFF {
 			// Exit with error. The process manager will restart us.
 			os.Exit(42)
@@ -208,7 +264,7 @@ func main() {
 				continue
 			}
 			// Otherwise, the tool is either OFF or in grace period (IDLE).
-			// Authenticate and switch the relay.
+			// Authenticate.
 			_, err := gauthbox.BadgeAuth(*config.BadgeAuth, badgeId, gauthbox.BADGE_ACTION_INITIAL)
 			if err != nil {
 				// Blink the red LED a few times to provide “access denied” feedback.
@@ -218,15 +274,37 @@ func main() {
 				time.Sleep(time.Millisecond * 1200)
 				red <- gauthbox.LedStatic{On: wasOff}
 			} else {
-				// All good, power the machine and start IDLEing.
+				// All good, user is authenticated. Transition to STATE_IDLE, blink green led.
 				state.state = STATE_IDLE
 				state.badgeId = badgeId
 				idleTimer.Reset(idleDuration)
 				badgeExpired.Reset(badgeExtendDuration)
 				green <- gauthbox.LedBlink{Interval: time.Millisecond * 500}
 				red <- gauthbox.LedStatic{On: false}
-				setRelay(true)
+				// Switch the relay on for a buttonless authbox.
+				if deviceType == "buttonless" {
+					setRelay(true)
+				}
 				go mqttPublish(badgeDev.Mqtt, state.badgedIn())
+				go notifyState()
+			}
+		case <-onButtonEvents:
+			// ON button was pressed.
+			if state.state == STATE_IDLE {
+				// Turn the relay on.
+				setRelay(true)
+				// Reset idle timer to give the user another chance to turn on the machine.
+				idleTimer.Reset(idleDuration)
+				go notifyState()
+			}
+		case <-offButtonEvents:
+			// OFF button was pressed.
+			if state.state == STATE_IDLE || state.state == STATE_IN_USE {
+				// Switch relay off and return to STATE_IDLE.
+				setRelay(false)
+				state.state = STATE_IDLE
+				idleTimer.Reset(idleDuration)
+				green <- gauthbox.LedBlink{Interval: time.Millisecond * 500}
 				go notifyState()
 			}
 		case currentIsHigh := <-currentSenseDev.Events:
@@ -301,7 +379,8 @@ func (s State) badgedIn() bool {
 }
 
 func (s State) String() string {
-	return fmt.Sprintf("state: %s, allowed: %s, badged-in: %s, relay: %s, mqtt: %s",
+	return fmt.Sprintf("device_type: %s, state: %s, allowed: %s, badged-in: %s, relay: %s, mqtt: %s",
+		s.deviceType,
 		map[int]string{
 			STATE_OFF:    "OFF (unauthenticated)",
 			STATE_IDLE:   "IDLE (authenticated)",

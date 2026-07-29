@@ -1,8 +1,8 @@
 Cross-compile locally & upload (dropbear: no scp, no rsync):
 
 ```shell
-env GOOS=linux GOARCH=arm64 go build cmd/local/buttonless.go
-cat buttonless | ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i ~/.ssh/id_ed25519 root@10.0.0.100 'cat > /tmp/buttonless ; chmod +x /tmp/buttonless'
+env GOOS=linux GOARCH=arm64 go build cmd/authbox/authbox.go
+cat authbox | ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i ~/.ssh/id_ed25519 root@10.0.0.100 'cat > /tmp/authbox ; chmod +x /tmp/authbox'
 ```
 
 If not otherwise configured, point `control.shop` to the host (gateway):
