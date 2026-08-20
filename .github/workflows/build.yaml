@@ -5,7 +5,7 @@ on: [push, workflow_dispatch]
 jobs:
   build:
     if: >
-      contains(github.event.head_commit.message, 'ci: build') || github.event_name == 'workflow_dispatch'
+      contains(github.event.head_commit.message, 'ci: build-rpi-authbox') || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     env:
       BR:            /home/runner/work/buildroot
@@ -17,18 +17,18 @@ jobs:
 
     steps:
       - name: Install base Debian packages
+        env:
+          DEBIAN_FRONTEND: noninteractive
         run: >
-          sudo
-          apt-get update
+          sudo apt-get update
           &&
-          DEBIAN_FRONTEND=noninteractive
-          sudo apt-get install -y
+          sudo apt-get install --no-install-recommends --assume-yes
           gcc bash bc cpio libexpat1-dev file util-linux passwd git make
           libncurses5-dev perl pkg-config libgcc-12-dev rsync unzip util-linux
           wget 7zip pv
 
       - name: Check out repository code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Get short revision SHA
         id: short-sha
@@ -115,13 +115,13 @@ jobs:
           tail -n 300 $LOGS/build
 
       - name: Upload rpi-authbox
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: rpi-authbox
           path: ${{ env.BUILD }}/rpi-authbox
 
       - name: Upload rpi-authbox.7z
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: rpi-authbox.7z
           path: ${{ env.BUILD }}/rpi-authbox.7z
@@ -135,15 +135,67 @@ jobs:
           files: ${{ env.BUILD }}/rpi-authbox.7z
           fail_on_unmatched_files: true
 
+  build_usb_gadget:
+    runs-on: ubuntu-26.04-arm
+    if: >
+      contains(github.event.head_commit.message, 'ci: build-usb-gadget') || github.event_name == 'workflow_dispatch'
+    name: build usb gadget authbox for RPi Zero 2 W
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install base Debian packages
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: >
+          sudo apt-get update
+          &&
+          sudo apt-get install --no-install-recommends --assume-yes
+          podman age dosfstools mtools parted
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@8aa03977d8d733052d78f4e008a241fd1dbf36b3 # v31.10.6
+        with:
+          extra_nix_config: sandbox = true
+
+      - name: Build
+        working-directory: wifi-usb
+        run: |
+          cat <<EOF > .envrc.local
+            export WIFI_SSID=${{ secrets.WIFI_SSID }}
+            export WIFI_PSK=${{ secrets.WIFI_PSK }}
+            export CONFIG_URL=${{ secrets.CONFIG_URL }}
+            export ROOT_PSWD=${{ secrets.ROOT_PSWD }}
+            export RCLONE_CONFIG=/media/mmcblk0p1/rclone.conf
+          EOF
+          source <(sed '/use flake/d' .envrc)
+          make
+
+      - name: Encrypt
+        working-directory: wifi-usb/out
+        env:
+          RECIPIENT: age1kpjkw5fe2p3l7ty77l3wqj927mdcagcla5gqf9fydx5h9djlhucqhkgh8s
+        run: |
+          age -e -r "$RECIPIENT" -o sdcard.img.enc               sdcard.img
+          age -e -r "$RECIPIENT" -o dropportal.apkovl.tar.gz.enc dropportal.apkovl.tar.gz
+
+      - name: Upload usb_gadget_authbox
+        uses: actions/upload-artifact@v7
+        with:
+          name: usb_gadget_authbox
+          path: |
+            wifi-usb/out/sdcard.img.enc
+            wifi-usb/out/dropportal.apkovl.tar.gz.enc
+
   build_authbox_config:
     runs-on: ubuntu-latest
     name: build authbox_config for x86_64
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version-file: gauthbox/go.mod
           cache-dependency-path: gauthbox/go.sum
@@ -152,7 +204,7 @@ jobs:
         run: cd gauthbox && go build -v -o authbox_config ./cmd/config
 
       - name: Upload authbox_config
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: authbox_config
           path: gauthbox/authbox_config

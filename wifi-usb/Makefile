@@ -3,7 +3,7 @@ TMP := .tmp
 OUT := out
 
 # Ensure required variables are set
-REQUIRED_VARS := ALPINE_VERSION RPI_FIRMWARE_TAG SDCARD_LABEL AP_SSID AP_PSK CONFIG_URL
+REQUIRED_VARS := ALPINE_VERSION ROOT_PSWD RPI_FIRMWARE_TAG SDCARD_LABEL AP_SSID AP_PSK CONFIG_URL
 ifndef BOOT_SERVER_SDCARD
 REQUIRED_VARS += BOOT_SERVER_IP BOOT_SERVER_PORT
 SDCARD_SIZE_MB := 128
@@ -45,11 +45,11 @@ endif
 
 $(TMP)/initramfs-rpi $(TMP)/vmlinuz-rpi $(TMP)/lib/modules &: Containerfile.initramfs patch-init.awk $(TMP)/initramfs
 	@mkdir -p $(TMP)
-	$(PODMAN_BUILD_INITRAMFS) --output type=local,dest=$(TMP) -f Containerfile.initramfs .
+	@$(PODMAN_BUILD_INITRAMFS) --output type=local,dest=$(TMP) -f Containerfile.initramfs .
 
 $(APKOVL): Containerfile.apkovl $(TMP)/apkovl $(TMP)/lib/modules
 	@mkdir -p $(OUT)
-	$(PODMAN_BUILD) --output type=local,dest=$(OUT) -f Containerfile.apkovl .
+	@$(PODMAN_BUILD) --build-arg ROOT_PSWD=$(ROOT_PSWD) --output type=local,dest=$(OUT) -f Containerfile.apkovl .
 
 $(TMP)/apkovl: $(shell find apkovl -type f 2>/dev/null) $(shell find usb-gadget -type f 2>/dev/null)
 	@rm -rf $@
@@ -108,15 +108,15 @@ endif
 $(SDCARD_IMG): $(TMP_BLOBS) $(TMP_OVERLAYS) $(TMP_SYSTEM) $(KERNEL_FILES) $(TMP)/lib/modules $(TMP)/.mtoolsrc $(SDCARD_IMG_DEPS)
 	@rm -f $@
 	@mkdir -p $(OUT)
-	dd if=/dev/zero of=$@ bs=1M count=$(SDCARD_SIZE_MB) status=progress
-	parted -s $@ mklabel msdos mkpart primary fat32 1MiB 100% set 1 boot on
-	mkfs.fat -F 32 --offset 2048 -n "$(SDCARD_LABEL)" $@
-	mcopy -o $(TMP_BLOBS) $(TMP_SYSTEM) $(KERNEL_FILES) r:/
+	@dd if=/dev/zero of=$@ bs=1M count=$(SDCARD_SIZE_MB) status=progress
+	@parted -s $@ mklabel msdos mkpart primary fat32 1MiB 100% set 1 boot on
+	@mkfs.fat -F 32 --offset 2048 -n "$(SDCARD_LABEL)" $@
+	@mcopy -o $(TMP_BLOBS) $(TMP_SYSTEM) $(KERNEL_FILES) r:/
 ifdef BOOT_SERVER_SDCARD
-	mcopy -o $(APKOVL) r:/
+	@mcopy -o $(APKOVL) r:/
 endif
-	mmd r:/overlays
-	mcopy -o $(TMP_OVERLAYS) r:/overlays/
+	@mmd r:/overlays
+	@mcopy -o $(TMP_OVERLAYS) r:/overlays/
 
 clean:
 	rm -rf $(TMP) $(OUT)

@@ -5,6 +5,8 @@ RUN apk add --no-cache alpine-base
 
 # apkovl= .tar.gz (newroot)
 FROM base AS apkovl
+ARG ROOT_PSWD
+
 RUN apk add --no-cache \
     alpine-base dnsmasq haveged hostapd rclone \
     dosfstools util-linux openssh wpa_supplicant iproute2 iw chrony
@@ -33,7 +35,7 @@ RUN rc-update add wpa_supplicant default && \
     rc-update add syslog boot && \
     rc-update add haveged boot && \
     rc-update add hwdrivers sysinit && \
-    echo 'root:root' | chpasswd && \
+    echo "root:$ROOT_PSWD" | chpasswd && \
     echo 'dropportal' > /etc/hostname && \
     echo "Europe/Zurich" > /etc/timezone && \
     echo "" > /etc/apk/repositories && \

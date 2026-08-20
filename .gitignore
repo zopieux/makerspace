@@ -27,6 +27,7 @@ pcbway_production/
 .envrc.local
 sdcard.img
 .old
+key*txt
 wifi-usb-storage
 wifi-usb/id_pizero
 out
