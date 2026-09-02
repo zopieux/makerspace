@@ -170,6 +170,21 @@ type mockCloser struct{}
 
 func (m *mockCloser) Close() error { return nil }
 
+type mockGpioLine struct {
+	pin    int
+	values chan int
+}
+
+func (m *mockGpioLine) SetValue(val int) error {
+	select {
+	case m.values <- val:
+	default:
+	}
+	return nil
+}
+
+func (m *mockGpioLine) Close() error { return nil }
+
 func Test(t *testing.T) {
 	// 1. Start the Mock MQTT Broker
 	mqttBroker := mqtttest.StartMockMQTT(t)
@@ -197,7 +212,10 @@ func Test(t *testing.T) {
 				"gadget": {
 					"usb_label": "TEST_USB",
 					"logout_pin": 5,
-					"reload_pin": 6
+					"reload_pin": 6,
+					"status_led": {
+						"pin": 7
+					}
 				}
 			}`, "tcp://"+mqttBroker.Addr, ts.URL)
 			return
@@ -239,6 +257,13 @@ func Test(t *testing.T) {
 		}, nil
 	}
 
+	// Mock GPIO Status LED
+	ledValues := make(chan int, 50)
+	gauthbox.RequestOutputPinFn = func(pin int, initVal int) (gauthbox.GpioLine, error) {
+		return &mockGpioLine{pin: pin, values: ledValues}, nil
+	}
+	blinkInterval = 5 * time.Millisecond
+
 	// Mock GPIO Input Buttons
 	var logoutCallback func(bool)
 	var reloadCallback func(bool)
@@ -273,19 +298,19 @@ func Test(t *testing.T) {
 	// 7. Verify MQTT Connection & Discovery configurations
 	// The client should send CONNECT (1) and SUBSCRIBE (8) packets to our mock MQTT broker
 	hasConnect := false
-	hasSubscribe := false
+	subscribeCount := 0
 	deadline := time.After(time.Second)
 
-	for !hasConnect || !hasSubscribe {
+	for !hasConnect || subscribeCount < 4 {
 		select {
 		case packet := <-mqttBroker.Packets:
 			if packet == mqttPacketConnect {
 				hasConnect = true
 			} else if packet == mqttPacketSubscribe {
-				hasSubscribe = true
+				subscribeCount++
 			}
 		case <-deadline:
-			t.Fatalf("Timeout waiting for MQTT Connect/Subscribe packets. Connect: %v, Subscribe: %v", hasConnect, hasSubscribe)
+			t.Fatalf("Timeout waiting for MQTT Connect/Subscribe packets. Connect: %v, Subscribes: %d", hasConnect, subscribeCount)
 		}
 	}
 
@@ -336,6 +361,51 @@ func Test(t *testing.T) {
 		default:
 		}
 	}
+
+	// 7b. Test badging while access is disabled
+	slog.Info("Disabling access via MQTT...")
+	mqttBroker.PublishToClient("onefinity_cnc/authbox_test_cnc/access/set", "OFF")
+	time.Sleep(30 * time.Millisecond)
+
+	// Drain any previous led values
+	for len(ledValues) > 0 {
+		<-ledValues
+	}
+
+	slog.Info("Simulating badge scan event while disabled...")
+	badgeChan <- "999999"
+
+	// Verify status LED blinks
+	blinkCount := 0
+	deadline = time.After(time.Second)
+drainLoop:
+	for {
+		select {
+		case val := <-ledValues:
+			if val == 1 {
+				blinkCount++
+			}
+		case <-deadline:
+			break drainLoop
+		case <-time.After(100 * time.Millisecond):
+			break drainLoop
+		}
+	}
+	if blinkCount == 0 {
+		t.Errorf("Expected status LED to blink when badging while disabled, got %d high pulses", blinkCount)
+	}
+
+	// Verify no mode transitions occurred
+	select {
+	case mode := <-mockOrch.modeChan:
+		t.Fatalf("Unexpected USB mode switch while access disabled: %v", mode)
+	default:
+	}
+
+	// Re-enable access via MQTT
+	slog.Info("Re-enabling access via MQTT...")
+	mqttBroker.PublishToClient("onefinity_cnc/authbox_test_cnc/access/set", "ON")
+	time.Sleep(30 * time.Millisecond)
 
 	// 8. Simulate a badge scan event!
 	slog.Info("Simulating badge scan event '887766'...")

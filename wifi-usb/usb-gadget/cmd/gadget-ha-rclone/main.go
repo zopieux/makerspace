@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"gauthbox"
@@ -76,7 +77,45 @@ var (
 
 	wakeBadgeReader = make(chan struct{}, 1)
 	statusLed       gauthbox.GpioLine
+
+	accessAllowed atomic.Bool
+	blinkInterval = 120 * time.Millisecond
+	ledMu         sync.Mutex
 )
+
+func init() {
+	accessAllowed.Store(true)
+}
+
+func setStatusLed(on bool) {
+	if statusLed == nil || conf.StatusLed == nil {
+		return
+	}
+	val := 0
+	if on {
+		val = 1
+	}
+	if conf.StatusLed.ActiveLow {
+		val = 1 - val
+	}
+	statusLed.SetValue(val)
+}
+
+func blinkStatusLed() {
+	if statusLed == nil || conf.StatusLed == nil {
+		return
+	}
+	ledMu.Lock()
+	defer ledMu.Unlock()
+
+	for i := 0; i < 5; i++ {
+		setStatusLed(true)
+		time.Sleep(blinkInterval)
+		setStatusLed(false)
+		time.Sleep(blinkInterval)
+	}
+	setStatusLed(!isAttaching && usbCtrl.IsBound())
+}
 
 var configUrl = getEnv("CONFIG_URL", "http://example.org/config/onefinity-cnc")
 var rcloneConfigPath = getEnv("RCLONE_CONFIG", "/root/.config/rclone/rclone.conf")
@@ -253,17 +292,9 @@ func reportStatus() {
 	} else if usbCtrl.IsBound() {
 		state = "attached"
 	}
-	if statusLed != nil {
-		on := (state == "attached")
-		val := 0
-		if on {
-			val = 1
-		}
-		if conf.StatusLed.ActiveLow {
-			val = 1 - val
-		}
-		statusLed.SetValue(val)
-	}
+	ledMu.Lock()
+	setStatusLed(state == "attached")
+	ledMu.Unlock()
 	if state != lastStatus {
 		if mqttPublish != nil {
 			mqttPublish(statusComponent, state)
@@ -395,6 +426,8 @@ func publishUsername(username string) {
 }
 
 func main() {
+	accessAllowed.Store(true)
+
 	if err := loadConfig(); err != nil {
 		slog.Error("Failed to load config", slog.Any("error", err))
 		os.Exit(1)
@@ -587,6 +620,22 @@ func main() {
 
 	// MQTT.
 	components := []gauthbox.MqttComponent{statusComponent, usernameComponent, detachComponent}
+
+	accessAllowedChan := make(chan bool)
+	accessDev, err := gauthbox.AccessAllowed(accessAllowedChan)
+	if err != nil {
+		slog.Error("Failed to initialize access-allowed", slog.Any("error", err))
+	} else {
+		components = append(components, accessDev.Mqtt)
+		go accessDev.Looper()
+		go func() {
+			for allowed := range accessAllowedChan {
+				accessAllowed.Store(allowed)
+				slog.Info("Access allowed changed", slog.Bool("allowed", allowed))
+			}
+		}()
+	}
+
 	looper, events, publish := gauthbox.MqttBroker(*globalConfig.MqttBroker, components)
 	mqttPublish = publish
 
@@ -659,6 +708,12 @@ func main() {
 					continue
 				}
 				slog.Info("Received badge ID", slog.String("badgeId", badgeId))
+
+				if !accessAllowed.Load() {
+					slog.Warn("badging attempt while access is disallowed", slog.String("id", badgeId))
+					blinkStatusLed()
+					continue
+				}
 
 				username, err := gauthbox.BadgeAuth(*globalConfig.BadgeAuth, badgeId, gauthbox.BADGE_ACTION_INITIAL)
 				if err != nil {
