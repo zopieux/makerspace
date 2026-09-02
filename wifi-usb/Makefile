@@ -16,7 +16,7 @@ $(foreach v,$(REQUIRED_VARS),$(if $(strip $($v)),,$(error $v is unset)))
 RPI_FW_BASE := https://github.com/raspberrypi/firmware/raw/$(RPI_FIRMWARE_TAG)/boot
 
 BLOBS := bootcode.bin start.elf fixup.dat $(DTB_FILE)
-OVERLAYS := miniuart-bt.dtbo disable-bt.dtbo dwc2.dtbo
+OVERLAYS := miniuart-bt.dtbo disable-bt.dtbo dwc2.dtbo pwm-gpio.dtbo
 
 SDCARD_IMG := $(OUT)/sdcard.img
 APKOVL_NAME := dropportal.apkovl.tar.gz
