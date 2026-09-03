@@ -215,6 +215,9 @@ func Test(t *testing.T) {
 					"reload_pin": 6,
 					"status_led": {
 						"pin": 7
+					},
+					"relay": {
+						"pin": 12
 					}
 				}
 			}`, "tcp://"+mqttBroker.Addr, ts.URL)
@@ -470,6 +473,7 @@ drainLoop:
 	assertMQTTMessages(t, map[string]string{
 		"onefinity_cnc/authbox_test_cnc/status/state":   "attached",
 		"onefinity_cnc/authbox_test_cnc/username/state": "test_user",
+		"onefinity_cnc/authbox_test_cnc/relay/state":    "ON",
 	}, time.Second)
 
 	// Simulate reload button press when authenticated
@@ -588,6 +592,7 @@ drainLoop:
 	assertMQTTMessages(t, map[string]string{
 		"onefinity_cnc/authbox_test_cnc/status/state":   "detached",
 		"onefinity_cnc/authbox_test_cnc/username/state": "",
+		"onefinity_cnc/authbox_test_cnc/relay/state":    "OFF",
 	}, time.Second)
 
 	// 10. Verify Extra unmarshal works

@@ -174,6 +174,7 @@ type UsbGadgetConfig struct {
 	UsbEnablePin      *int          `json:"usb_enable_pin,omitempty"`
 	Button            *ButtonConfig `json:"button,omitempty"`
 	StatusLed         *LedConfig    `json:"status_led,omitempty"`
+	Relay             *RelayConfig  `json:"relay,omitempty"`
 }
 
 type AuthboxConfig struct {

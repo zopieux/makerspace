@@ -77,6 +77,9 @@ var (
 
 	wakeBadgeReader = make(chan struct{}, 1)
 	statusLedChan   = make(chan gauthbox.LedMode, 10)
+	relayChan       chan bool
+	relayDev        *gauthbox.DeviceRet[bool]
+	relayOn         bool
 
 	accessAllowed atomic.Bool
 	blinkInterval = 120 * time.Millisecond
@@ -84,6 +87,19 @@ var (
 
 func init() {
 	accessAllowed.Store(true)
+}
+
+func setRelay(on bool) {
+	if relayChan == nil {
+		return
+	}
+	if relayOn != on {
+		relayOn = on
+		relayChan <- on
+		if mqttPublish != nil && relayDev != nil {
+			go mqttPublish(relayDev.Mqtt, on)
+		}
+	}
 }
 
 func blinkStatusLed() {
@@ -262,6 +278,9 @@ func loadConfig() error {
 		if g.StatusLed != nil {
 			conf.StatusLed = g.StatusLed
 		}
+		if g.Relay != nil {
+			conf.Relay = g.Relay
+		}
 	}
 
 	return nil
@@ -281,6 +300,7 @@ func reportStatus() {
 			statusLedChan <- gauthbox.LedStatic{On: state == "attached"}
 		}
 	}
+	setRelay(state == "attached" && accessAllowed.Load())
 	if state != lastStatus {
 		if mqttPublish != nil {
 			mqttPublish(statusComponent, state)
@@ -603,6 +623,19 @@ func main() {
 	// MQTT.
 	components := []gauthbox.MqttComponent{statusComponent, usernameComponent, detachComponent}
 
+	if conf.Relay != nil {
+		relayChan = make(chan bool, 10)
+		var err error
+		relayDev, err = gauthbox.Relay(*conf.Relay, relayChan)
+		if err != nil {
+			slog.Error("Failed to initialize relay", slog.Int("pin", conf.Relay.Pin), slog.Any("error", err))
+		} else {
+			components = append(components, relayDev.Mqtt)
+			go relayDev.Looper()
+			slog.Info("Initialized relay", slog.Int("pin", conf.Relay.Pin))
+		}
+	}
+
 	accessAllowedChan := make(chan bool)
 	accessDev, err := gauthbox.AccessAllowed(accessAllowedChan)
 	if err != nil {
@@ -632,6 +665,9 @@ func main() {
 				slog.Info("Connected to MQTT broker")
 				lastStatus = "" // Force re-report
 				reportStatus()
+				if relayDev != nil && mqttPublish != nil {
+					go mqttPublish(relayDev.Mqtt, relayOn)
+				}
 			case gauthbox.MqttDisonnected:
 				slog.Error("Disconnected from MQTT broker", slog.Any("error", ev.Error))
 			case gauthbox.MqttResetRequest:
