@@ -112,14 +112,14 @@ func main() {
 	mqttComponents = append(mqttComponents, relayDev.Mqtt)
 	go relayDev.Looper()
 
-	green := make(chan interface{})
+	green := make(chan gauthbox.LedMode)
 	greenLed, err := gauthbox.Blinker(*config.GreenLed, "ACT", green)
 	if err != nil {
 		log.Fatalf("could not initialize green led: %s", err)
 	}
 	go greenLed()
 
-	red := make(chan interface{})
+	red := make(chan gauthbox.LedMode)
 	redLed, err := gauthbox.Blinker(*config.RedLed, "PWR", red)
 	if err != nil {
 		log.Fatalf("could not initialize red led: %s", err)
@@ -213,6 +213,14 @@ func main() {
 		go mqttPublish(relayDev.Mqtt, on)
 	}
 
+	setRedOffLed := func() {
+		if state.accessAllowed {
+			red <- gauthbox.LedStatic{On: true}
+		} else {
+			red <- gauthbox.NotAllowedAnimation
+		}
+	}
+
 	notifyState := func() {
 		stateStr := state.String()
 		slog.Debug("state changed", slog.String("state", stateStr))
@@ -221,7 +229,7 @@ func main() {
 
 	setRelay(false)
 	green <- gauthbox.LedStatic{On: false}
-	red <- gauthbox.LedStatic{On: true}
+	setRedOffLed()
 
 	gauthbox.SdNotify("READY=1")
 	notifyState()
@@ -250,6 +258,9 @@ func main() {
 		case allowed := <-accessAllowed:
 			state.accessAllowed = allowed
 			slog.Info("access allowed changed", slog.Bool("allowed", allowed))
+			if state.state == STATE_OFF {
+				setRedOffLed()
+			}
 		case badgeId := <-badgeDev.Events:
 			// Someone badged.
 			if state.state == STATE_IN_USE {
@@ -259,7 +270,7 @@ func main() {
 			if !state.accessAllowed {
 				red <- gauthbox.LedBlink{Interval: time.Millisecond * 120}
 				time.Sleep(time.Millisecond * 1200)
-				red <- gauthbox.LedStatic{On: true}
+				setRedOffLed()
 				slog.Warn("badging attempt while access is disallowed", slog.String("id", badgeId))
 				continue
 			}
@@ -272,7 +283,11 @@ func main() {
 				slog.Warn("error authenticating badge", slog.String("id", badgeId), slog.Any("error", err))
 				red <- gauthbox.LedBlink{Interval: time.Millisecond * 120}
 				time.Sleep(time.Millisecond * 1200)
-				red <- gauthbox.LedStatic{On: wasOff}
+				if wasOff {
+					setRedOffLed()
+				} else {
+					red <- gauthbox.LedStatic{On: false}
+				}
 			} else {
 				// All good, user is authenticated. Transition to STATE_IDLE, blink green led.
 				state.state = STATE_IDLE
@@ -357,7 +372,7 @@ func main() {
 				state.state = STATE_OFF
 				setRelay(false)
 				green <- gauthbox.LedStatic{On: false}
-				red <- gauthbox.LedStatic{On: true}
+				setRedOffLed()
 				go func(badgeId string) {
 					_, err := gauthbox.BadgeAuth(*config.BadgeAuth, badgeId, gauthbox.BADGE_ACTION_RETURN)
 					if err != nil {

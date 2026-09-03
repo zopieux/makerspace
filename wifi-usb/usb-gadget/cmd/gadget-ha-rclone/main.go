@@ -76,45 +76,27 @@ var (
 	detachComponent   gauthbox.MqttComponent
 
 	wakeBadgeReader = make(chan struct{}, 1)
-	statusLed       gauthbox.GpioLine
+	statusLedChan   = make(chan gauthbox.LedMode, 10)
 
 	accessAllowed atomic.Bool
 	blinkInterval = 120 * time.Millisecond
-	ledMu         sync.Mutex
 )
 
 func init() {
 	accessAllowed.Store(true)
 }
 
-func setStatusLed(on bool) {
-	if statusLed == nil || conf.StatusLed == nil {
-		return
-	}
-	val := 0
-	if on {
-		val = 1
-	}
-	if conf.StatusLed.ActiveLow {
-		val = 1 - val
-	}
-	statusLed.SetValue(val)
-}
-
 func blinkStatusLed() {
-	if statusLed == nil || conf.StatusLed == nil {
+	if conf.StatusLed == nil {
 		return
 	}
-	ledMu.Lock()
-	defer ledMu.Unlock()
-
-	for i := 0; i < 5; i++ {
-		setStatusLed(true)
-		time.Sleep(blinkInterval)
-		setStatusLed(false)
-		time.Sleep(blinkInterval)
+	statusLedChan <- gauthbox.LedBlink{Interval: blinkInterval}
+	time.Sleep(10 * blinkInterval)
+	if !accessAllowed.Load() {
+		statusLedChan <- gauthbox.NotAllowedAnimation
+	} else {
+		statusLedChan <- gauthbox.LedStatic{On: !isAttaching && usbCtrl.IsBound()}
 	}
-	setStatusLed(!isAttaching && usbCtrl.IsBound())
 }
 
 var configUrl = getEnv("CONFIG_URL", "http://example.org/config/onefinity-cnc")
@@ -292,9 +274,13 @@ func reportStatus() {
 	} else if usbCtrl.IsBound() {
 		state = "attached"
 	}
-	ledMu.Lock()
-	setStatusLed(state == "attached")
-	ledMu.Unlock()
+	if conf.StatusLed != nil {
+		if !accessAllowed.Load() {
+			statusLedChan <- gauthbox.NotAllowedAnimation
+		} else {
+			statusLedChan <- gauthbox.LedStatic{On: state == "attached"}
+		}
+	}
 	if state != lastStatus {
 		if mqttPublish != nil {
 			mqttPublish(statusComponent, state)
@@ -441,16 +427,12 @@ func main() {
 	}
 
 	if conf.StatusLed != nil {
-		var err error
-		initVal := 0
-		if conf.StatusLed.ActiveLow {
-			initVal = 1
-		}
-		statusLed, err = gauthbox.RequestOutputPinFn(conf.StatusLed.Pin, initVal)
+		runner, err := gauthbox.Blinker(*conf.StatusLed, "", statusLedChan)
 		if err != nil {
-			slog.Error("Failed to initialize status LED", slog.Int("pin", conf.StatusLed.Pin), slog.Any("error", err))
+			slog.Error("Failed to initialize status LED blinker", slog.Int("pin", conf.StatusLed.Pin), slog.Any("error", err))
 		} else {
-			slog.Info("Initialized status LED", slog.Int("pin", conf.StatusLed.Pin))
+			go runner()
+			slog.Info("Initialized status LED blinker", slog.Int("pin", conf.StatusLed.Pin))
 		}
 	}
 
@@ -632,6 +614,7 @@ func main() {
 			for allowed := range accessAllowedChan {
 				accessAllowed.Store(allowed)
 				slog.Info("Access allowed changed", slog.Bool("allowed", allowed))
+				reportStatus()
 			}
 		}()
 	}

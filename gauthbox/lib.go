@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"text/template"
 	"time"
@@ -70,15 +71,82 @@ type MqttConfig struct {
 }
 
 type LedConfig struct {
-	Pin       int  `json:"pin"`
-	ActiveLow bool `json:"active_low"`
+	Pin        int  `json:"pin"`
+	ActiveLow  bool `json:"active_low"`
+	PwmChip    *int `json:"pwm_chip,omitempty"`
+	PwmChannel *int `json:"pwm_channel,omitempty"`
+}
+
+// LedMode represents a sealed sum type of valid LED states: LedStatic, LedBlink, or LedAnimation.
+type LedMode interface {
+	isLedMode()
 }
 
 type LedStatic struct {
 	On bool
 }
+
+func (LedStatic) isLedMode() {}
+
 type LedBlink struct {
 	Interval time.Duration
+}
+
+func (LedBlink) isLedMode() {}
+
+type TweenFunc func(t float64) float64
+
+var (
+	Linear TweenFunc = func(t float64) float64 {
+		return t
+	}
+	EaseIn TweenFunc = func(t float64) float64 {
+		return t * t * t
+	}
+	EaseOut TweenFunc = func(t float64) float64 {
+		u := 1 - t
+		return 1 - u*u*u
+	}
+	EaseInOut TweenFunc = func(t float64) float64 {
+		if t < 0.5 {
+			return 4 * t * t * t
+		}
+		u := 1 - t
+		return 1 - 4*u*u*u
+	}
+)
+
+type PwmStep struct {
+	From     float64       `json:"from"`
+	To       float64       `json:"to"`
+	Duration time.Duration `json:"duration"`
+	Curve    TweenFunc     `json:"-"`
+}
+
+func PwmHold(brightness float64, duration time.Duration) PwmStep {
+	return PwmStep{From: brightness, To: brightness, Duration: duration, Curve: Linear}
+}
+
+func PwmFade(from, to float64, duration time.Duration, curve ...TweenFunc) PwmStep {
+	c := Linear
+	if len(curve) > 0 && curve[0] != nil {
+		c = curve[0]
+	}
+	return PwmStep{From: from, To: to, Duration: duration, Curve: c}
+}
+
+type LedAnimation struct {
+	Steps []PwmStep
+}
+
+func (LedAnimation) isLedMode() {}
+
+var NotAllowedAnimation = LedAnimation{
+	Steps: []PwmStep{
+		PwmHold(1.0, 5*time.Second),
+		PwmFade(1.0, 0.0, 2*time.Second, EaseInOut),
+		PwmFade(0.0, 1.0, 2*time.Second, EaseInOut),
+	},
 }
 
 type ButtonConfig struct {
@@ -311,6 +379,35 @@ type GpioLine interface {
 	Close() error
 }
 
+type PwmController interface {
+	SetDutyCycle(duty float64) error
+	Close() error
+}
+
+type SysfsPwm struct {
+	path      string
+	periodNs  int
+	activeLow bool
+}
+
+func (p *SysfsPwm) SetDutyCycle(duty float64) error {
+	if duty < 0 {
+		duty = 0
+	} else if duty > 1 {
+		duty = 1
+	}
+	if p.activeLow {
+		duty = 1.0 - duty
+	}
+	dutyNs := int(float64(p.periodNs) * duty)
+	return WriteSysfsPwmDutyFn(p.path, dutyNs)
+}
+
+func (p *SysfsPwm) Close() error {
+	_ = os.WriteFile(p.path+"/enable", []byte("0"), 0)
+	return nil
+}
+
 var (
 	RequestOutputPinFn = func(pin int, initVal int) (GpioLine, error) {
 		chip, err := findGpioChip()
@@ -355,6 +452,29 @@ var (
 			return nil
 		}
 		return os.WriteFile("/sys/class/leds/"+sysLedName+"/trigger", []byte(trigger), 0)
+	}
+
+	WriteSysfsPwmDutyFn = func(pwmPath string, dutyNs int) error {
+		return os.WriteFile(pwmPath+"/duty_cycle", []byte(strconv.Itoa(dutyNs)), 0)
+	}
+
+	OpenSysfsPwmFn = func(chip int, channel int, periodNs int, activeLow bool) (PwmController, error) {
+		chipPath := fmt.Sprintf("/sys/class/pwm/pwmchip%d", chip)
+		pwmPath := fmt.Sprintf("%s/pwm%d", chipPath, channel)
+
+		if _, err := os.Stat(pwmPath); os.IsNotExist(err) {
+			_ = os.WriteFile(chipPath+"/export", []byte(strconv.Itoa(channel)), 0)
+		}
+
+		_ = os.WriteFile(pwmPath+"/period", []byte(strconv.Itoa(periodNs)), 0)
+		_ = os.WriteFile(pwmPath+"/duty_cycle", []byte("0"), 0)
+		_ = os.WriteFile(pwmPath+"/enable", []byte("1"), 0)
+
+		return &SysfsPwm{
+			path:      pwmPath,
+			periodNs:  periodNs,
+			activeLow: activeLow,
+		}, nil
 	}
 
 	SdNotifyFn = func(state string) (bool, error) {
@@ -507,45 +627,187 @@ func AccessAllowed(isAllowed chan<- bool) (*DeviceRet[bool], error) {
 	}, nil
 }
 
-// Blinker utility to set a GPIO LED in either static or blink mode.
-// To change the state, send either LedStatic{On: bool} or LedBlink{Interval: Duration} to chan 'mode'.
+// Blinker utility to set a GPIO/PWM LED in static, blink, or animation sequence mode.
+// To change the state, send LedStatic, LedBlink, or LedAnimation to chan 'mode'.
 // If sysLedName is non-empty, this also controls the on-board LED at /sys/class/leds/<sysLedName>.
-func Blinker(c LedConfig, sysLedName string, mode <-chan interface{}) (func(), error) {
+func Blinker(c LedConfig, sysLedName string, mode <-chan LedMode) (func(), error) {
 	if sysLedName != "" {
 		WriteSysfsLedTriggerFn(sysLedName, "none")
 	}
-	setPiLed := func(isOn bool) {
+	setPiLed := func(brightness int) {
 		if sysLedName != "" {
-			brightness := map[bool]string{false: "0", true: "1"}[isOn]
-			WriteSysfsLedFn(sysLedName, brightness)
+			WriteSysfsLedFn(sysLedName, strconv.Itoa(brightness))
 		}
 	}
-	line, err := RequestOutputPinFn(c.Pin, 0)
-	if err != nil {
-		return nil, err
+	setPiLedBool := func(isOn bool) {
+		if sysLedName != "" {
+			b := map[bool]string{false: "0", true: "1"}[isOn]
+			WriteSysfsLedFn(sysLedName, b)
+		}
 	}
+
+	var pwmCtrl PwmController
+	if c.PwmChip != nil {
+		channel := 0
+		if c.PwmChannel != nil {
+			channel = *c.PwmChannel
+		}
+		var err error
+		pwmCtrl, err = OpenSysfsPwmFn(*c.PwmChip, channel, 1000000, c.ActiveLow)
+		if err != nil {
+			slog.Warn("could not open sysfs pwm, falling back to gpio", slog.Any("error", err))
+		}
+	}
+
+	var line GpioLine
+	var err error
+	if pwmCtrl == nil {
+		line, err = RequestOutputPinFn(c.Pin, 0)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	setDuty := func(duty float64) {
+		if duty < 0 {
+			duty = 0
+		} else if duty > 1 {
+			duty = 1
+		}
+		if pwmCtrl != nil {
+			_ = pwmCtrl.SetDutyCycle(duty)
+		}
+		if line != nil {
+			on := duty >= 0.5
+			setLineValue(c.ActiveLow, line, on)
+		}
+		setPiLed(int(duty * 255))
+	}
+
+	setOnOff := func(on bool) {
+		if on {
+			setDuty(1.0)
+		} else {
+			setDuty(0.0)
+		}
+		setPiLedBool(on)
+	}
+
 	return func() {
-		timer := time.NewTicker(time.Millisecond)
-		timer.Stop()
-		isOn := false
+		defer func() {
+			if pwmCtrl != nil {
+				pwmCtrl.Close()
+			}
+			if line != nil {
+				line.Close()
+			}
+		}()
+
+		var currentMode LedMode
 		for {
-			select {
-			case m := <-mode:
-				switch mm := m.(type) {
-				case LedStatic:
-					timer.Stop()
-					setLineValue(c.ActiveLow, line, mm.On)
-					go setPiLed(mm.On)
-				case LedBlink:
-					isOn = false
-					setLineValue(c.ActiveLow, line, false)
-					go setPiLed(isOn)
-					timer.Reset(mm.Interval)
+			var m LedMode
+			if currentMode != nil {
+				m = currentMode
+				currentMode = nil
+			} else {
+				var ok bool
+				m, ok = <-mode
+				if !ok {
+					return
 				}
-			case <-timer.C:
-				isOn = !isOn
-				setLineValue(c.ActiveLow, line, isOn)
-				go setPiLed(isOn)
+			}
+
+			switch mm := m.(type) {
+			case LedStatic:
+				setOnOff(mm.On)
+
+			case LedBlink:
+				ticker := time.NewTicker(mm.Interval)
+				isOn := false
+				setOnOff(false)
+			blinkLoop:
+				for {
+					select {
+					case newMode, ok := <-mode:
+						ticker.Stop()
+						if !ok {
+							return
+						}
+						currentMode = newMode
+						break blinkLoop
+					case <-ticker.C:
+						isOn = !isOn
+						setOnOff(isOn)
+					}
+				}
+
+			case LedAnimation:
+				if len(mm.Steps) == 0 {
+					continue
+				}
+
+			animLoop:
+				for {
+					for _, step := range mm.Steps {
+						if step.Duration <= 0 {
+							setDuty(step.To)
+							continue
+						}
+
+						if step.From == step.To {
+							setDuty(step.From)
+							timer := time.NewTimer(step.Duration)
+							select {
+							case newMode, ok := <-mode:
+								timer.Stop()
+								if !ok {
+									return
+								}
+								currentMode = newMode
+								break animLoop
+							case <-timer.C:
+							}
+						} else {
+							const updateInterval = 20 * time.Millisecond
+							ticker := time.NewTicker(updateInterval)
+							startTime := time.Now()
+							stepDone := false
+
+							for !stepDone {
+								select {
+								case newMode, ok := <-mode:
+									ticker.Stop()
+									if !ok {
+										return
+									}
+									currentMode = newMode
+									break animLoop
+								case now := <-ticker.C:
+									elapsed := now.Sub(startTime)
+									if elapsed >= step.Duration {
+										ticker.Stop()
+										setDuty(step.To)
+										stepDone = true
+									} else {
+										curve := step.Curve
+										if curve == nil {
+											curve = Linear
+										}
+										t := float64(elapsed) / float64(step.Duration)
+										if t < 0 {
+											t = 0
+										} else if t > 1 {
+											t = 1
+										}
+										progress := curve(t)
+										current := step.From + progress*(step.To-step.From)
+										setDuty(current)
+									}
+								}
+							}
+						}
+					}
+				}
 			}
 		}
 	}, nil
