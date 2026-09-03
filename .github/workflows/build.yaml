@@ -84,8 +84,7 @@ jobs:
           ( cd $BUILD && $BR/support/scripts/graph-depends --flat-list --quiet --transitive -s toolchain ) \
             | tr ' ' '\n' | grep -E '^(toolchain|host)' | sort | xargs >/tmp/host.pkgs
           cat /tmp/host.pkgs
-          cd rpi-authbox && make BR2_EXTERNAL=$PWD O=$BUILD -C $BR $(cat /tmp/host.pkgs) 2>&1 \
-            | tee $LOGS/host | pv --line-mode --rate-limit $RATELIMIT
+          cd rpi-authbox && make BR2_EXTERNAL=$PWD O=$BUILD -C $BR $(cat /tmp/host.pkgs) 2>&1 >$LOGS/host
 
       - name: Tail host logs
         if: failure()
@@ -104,8 +103,7 @@ jobs:
       - name: Build everything
         run: |
           cd rpi-authbox
-          make BR2_EXTERNAL=$PWD O=$BUILD -C $BR rpi-authbox.7z 2>&1 \
-            | tee $LOGS/build | pv --line-mode --rate-limit $RATELIMIT
+          make BR2_EXTERNAL=$PWD O=$BUILD -C $BR rpi-authbox.7z 2>&1 >$LOGS/build
 
       - name: Tail build logs
         if: failure()
