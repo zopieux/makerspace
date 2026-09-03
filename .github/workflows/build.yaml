@@ -12,7 +12,7 @@ jobs:
       BUILD:         /home/runner/work/build
       BR2_DL_DIR:    /home/runner/work/dl
       LOGS:          /tmp
-      RATELIMIT:     0.1
+      RATELIMIT:     1
       CACHEFILE_SOURCES: ${{ github.workspace }}/.cachefile_sources
 
     steps:
