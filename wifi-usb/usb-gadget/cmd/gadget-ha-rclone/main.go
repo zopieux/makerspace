@@ -82,7 +82,6 @@ var (
 	relayOn         bool
 
 	accessAllowed atomic.Bool
-	blinkInterval = 120 * time.Millisecond
 )
 
 func init() {
@@ -99,19 +98,6 @@ func setRelay(on bool) {
 		if mqttPublish != nil && relayDev != nil {
 			go mqttPublish(relayDev.Mqtt, on)
 		}
-	}
-}
-
-func blinkStatusLed() {
-	if conf.StatusLed == nil {
-		return
-	}
-	statusLedChan <- gauthbox.LedBlink{Interval: blinkInterval}
-	time.Sleep(10 * blinkInterval)
-	if !accessAllowed.Load() {
-		statusLedChan <- gauthbox.NotAllowedAnimation
-	} else {
-		statusLedChan <- gauthbox.LedStatic{On: !isAttaching && usbCtrl.IsBound()}
 	}
 }
 
@@ -297,7 +283,14 @@ func reportStatus() {
 		if !accessAllowed.Load() {
 			statusLedChan <- gauthbox.NotAllowedAnimation
 		} else {
-			statusLedChan <- gauthbox.LedStatic{On: state == "attached"}
+			switch state {
+			case "attaching":
+				statusLedChan <- gauthbox.LedBlink{Interval: 250 * time.Millisecond}
+			case "attached":
+				statusLedChan <- gauthbox.LedStatic{On: true}
+			default:
+				statusLedChan <- gauthbox.LedStatic{On: false}
+			}
 		}
 	}
 	setRelay(state == "attached" && accessAllowed.Load())
@@ -498,6 +491,9 @@ func main() {
 						doublePressTimer.Stop()
 						doublePressTimer = nil
 					}
+					if conf.StatusLed != nil {
+						statusLedChan <- gauthbox.LedBlink{Interval: 500 * time.Millisecond}
+					}
 					cmdQueue <- func() {
 						if currentUsername != "" {
 							slog.Info("Button long pressed; logging out & detaching", slog.String("username", currentUsername))
@@ -533,6 +529,9 @@ func main() {
 					})
 				} else if pressCount == 2 {
 					pressCount = 0
+					if conf.StatusLed != nil {
+						statusLedChan <- gauthbox.LedBlink{Interval: 250 * time.Millisecond}
+					}
 					cmdQueue <- func() {
 						if currentUsername != "" {
 							username := currentUsername
@@ -728,20 +727,32 @@ func main() {
 				}
 				slog.Info("Received badge ID", slog.String("badgeId", badgeId))
 
+				if conf.StatusLed != nil {
+					statusLedChan <- gauthbox.LedBlink{Interval: 500 * time.Millisecond}
+				}
+
 				if !accessAllowed.Load() {
 					slog.Warn("badging attempt while access is disallowed", slog.String("id", badgeId))
-					blinkStatusLed()
+					if conf.StatusLed != nil {
+						statusLedChan <- gauthbox.NotAllowedAnimation
+					}
 					continue
 				}
 
 				username, err := gauthbox.BadgeAuth(*globalConfig.BadgeAuth, badgeId, gauthbox.BADGE_ACTION_INITIAL)
 				if err != nil {
 					slog.Error("Authentication failed for badge", slog.String("badgeId", badgeId), slog.Any("error", err))
+					if conf.StatusLed != nil {
+						statusLedChan <- gauthbox.NotAllowedAnimation
+					}
 					continue
 				}
 
 				if username == "" {
 					slog.Error("Authentication failed for badge: no username in response", slog.String("badgeId", badgeId))
+					if conf.StatusLed != nil {
+						statusLedChan <- gauthbox.NotAllowedAnimation
+					}
 					continue
 				}
 
