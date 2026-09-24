@@ -265,7 +265,6 @@ func Test(t *testing.T) {
 	gauthbox.RequestOutputPinFn = func(pin int, initVal int) (gauthbox.GpioLine, error) {
 		return &mockGpioLine{pin: pin, values: ledValues}, nil
 	}
-	blinkInterval = 5 * time.Millisecond
 
 	// Mock GPIO Input Buttons
 	var logoutCallback func(bool)
